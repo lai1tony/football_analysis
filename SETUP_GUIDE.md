@@ -21,7 +21,7 @@ pip install flask requests beautifulsoup4
 
 ## 配置
 
-`.env` 位于仓库根目录，由 `data/config_service.py` 读取和保存。Web 配置页为:
+`.env` 位于仓库根目录，由 `data/config_service.py` 读取和保存。Public GitHub 仓库不会提交真实 `.env`；新环境从 `.env.example` 复制一份到 `.env` 后填写本地密钥。Web 配置页为:
 
 ```text
 http://127.0.0.1:5050/config

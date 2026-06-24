@@ -6,6 +6,7 @@
 
 - Web UI: `python data/app.py`，默认访问 `http://127.0.0.1:5050/`。
 - 数据库: `data/football_data.db`。
+- Public GitHub 仓库只包含源码、文档、脚本和 `.env.example` 占位模板；真实 `.env`、SQLite 数据库、日志、虚拟环境、构建输出和安装包只保留在本地或私有分发包中。
 - 数据来源: 500.com 胜负彩页面及 odds.500.com 详情页；缺失字段通过统一策略按 `主源/已有数据 -> playwright-cli -> anysearch` 补采，公开辅助源包括 Flashscore、RotoWire、Understat、Soccerway 和 Transfermarkt。
 - 基础实力新增球队球员身价: `market_value_summary` 记录主客队总身价和差值，预测特征会把双方身价差纳入实力评估。身价源以 Transfermarkt 为准，Playwright 未命中时由 AnySearch 抽取 Transfermarkt 页面兜底。
 - 采集质量记录: `analyses.collection_quality_summary` 保存每个字段的采集阶段、来源和质量分，便于复盘哪些数据来自主源、Playwright 或 AnySearch。
@@ -126,5 +127,6 @@ python data/collect_current_first_match.py
 - 不要把入口改成 `python -m ...`，当前脚本使用本地绝对导入。
 - 新代码优先依赖 `source_500_client.py`、`collection_service.py`、`collection_repository.py`、`prediction_engine.py`。
 - `collector_store.py` 只作为兼容 facade。
+- 不要提交真实 `.env`、`data/*.db`、日志、虚拟环境或 `dist/`/`build/` 产物；公开配置示例只更新 `.env.example`。
 - 修改抓取或解析逻辑前，先用小探针验证 500.com 页面结构。
 - SQLite 被锁时，先停止重复的 `data/app.py` Python 进程，再重新启动服务。

@@ -43,6 +43,7 @@
 - Prefer verifying behavior from the Python scripts and code under `data/` over prose docs.
 - If docs conflict with code, trust the code. In particular, the current repo state supports the Python data and prediction prototype under `data/`, not any stale frontend residue.
 - Avoid reading values from `.env` or architecture docs that include credentials; use local environment files only when the task truly requires them.
+- Public GitHub pushes must keep only source/docs/scripts plus sanitized templates. Do not commit real `.env`, SQLite databases, logs, virtual environments, build outputs, installers, or old history containing secrets.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
