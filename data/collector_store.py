@@ -1,0 +1,74 @@
+"""Backward-compatible facade for the collection subsystem.
+
+This module is kept to avoid breaking older imports while the codebase moves
+to a layered structure built around source_500_client, collection_repository,
+and collection_service.
+"""
+
+from collection_repository import (  # noqa: F401
+    DEFAULT_ISSUE_RETENTION_COUNT,
+    DB_PATH,
+    get_collection_stats,
+    get_feedback_log,
+    get_latest_issue,
+    get_connection,
+    get_feedback_summary,
+    get_latest_feature_snapshot,
+    get_match_analysis,
+    get_prediction_run,
+    init_db,
+    list_backtest_rows,
+    list_feature_snapshots,
+    list_pending_manual_review_runs,
+    list_recent_issues,
+    list_matches_pending_settlement,
+    list_prediction_runs,
+    list_issues,
+    list_matches,
+    list_matches_by_issue,
+    prune_to_recent_issues,
+    prune_to_issue,
+    save_feedback_log,
+    save_feature_snapshot,
+    save_prediction_run,
+    serialize_match,
+)
+from collection_service import (  # noqa: F401
+    FIELD_GROUPS,
+    FIELD_LABELS,
+    build_sections,
+    collect_all_matches,
+    collect_match,
+    format_missing_required_dimensions,
+    get_collection_failure_reason,
+    get_missing_required_dimensions,
+    normalize_text,
+    summarize_issue_entries,
+    sync_issue_matches,
+    sync_matches,
+)
+from source_500_client import (  # noqa: F401
+    HEADERS,
+    SOURCE_URL,
+    fetch_current_matches,
+    fetch_html,
+)
+from prediction_engine import (  # noqa: F401
+    apply_target_batch_strategy_to_issue,
+    build_match_features,
+    get_canonical_prediction_run,
+    predict_issue,
+    predict_match,
+    preview_production_single_pick,
+    record_feedback,
+    resolve_manual_review,
+    run_data_quality,
+    run_legacy_market_model,
+    run_ml_model,
+    run_quant_model,
+    run_risk_assessor,
+    settle_match_result,
+    settle_issue_results,
+    summarize_backtest,
+    summarize_target_batch_strategy,
+)

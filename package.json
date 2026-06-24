@@ -1,0 +1,17 @@
+{
+  "name": "football_analysis",
+  "version": "1.0.0",
+  "description": "当前仓库是一个基于 Python + Flask + SQLite 的足球数据采集、检阅与预测原型，聚焦中国体育足球彩票最新一期 14 场赛事的数据同步、结构化采集、预测生成与赛后反馈记录。",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@playwright/cli": "latest",
+    "playwright": "latest"
+  }
+}

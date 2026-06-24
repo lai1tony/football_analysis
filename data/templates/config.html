@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>系统配置管理</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <div class="page-glow page-glow-1"></div>
+  <div class="page-glow page-glow-2"></div>
+  <div class="layout config-layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand-mark">System Configuration</div>
+        <h1>系统配置管理</h1>
+        <p>摘要模型、复核模型与采集辅助配置</p>
+      </div>
+
+      <a href="{{ url_for('index') }}" class="btn btn-secondary">返回主页</a>
+
+      <div class="panel panel-compact">
+        <div class="panel-title">配置说明</div>
+        <div class="config-help">
+          <p>摘要模型继续使用 `OPENAI_*`，仅用于最终预测摘要生成。</p>
+          <p>复核模型使用 `COLLECTION_*`，仅用于“算法主判 + LLM复核 + 规则仲裁”。</p>
+          <p>两组模型都按 OpenAI-compatible `/chat/completions` 测试与调用。</p>
+        </div>
+      </div>
+    </aside>
+
+    <main class="content config-content">
+      <form method="post" action="{{ url_for('config_save') }}" class="config-form">
+        <section class="config-section">
+          <div class="config-section-title">摘要模型</div>
+          <div class="config-grid">
+            <div class="config-field">
+              <label for="OPENAI_BASE_URL">Base URL</label>
+              <input type="text" id="OPENAI_BASE_URL" name="OPENAI_BASE_URL" value="{{ config.get('OPENAI_BASE_URL', '') }}" placeholder="https://api.openai.com/v1">
+            </div>
+            <div class="config-field">
+              <label for="OPENAI_API_KEY">API Key</label>
+              <input type="password" id="OPENAI_API_KEY" name="OPENAI_API_KEY" value="{{ config.get('OPENAI_API_KEY', '') }}" placeholder="sk-...">
+            </div>
+            <div class="config-field config-field-full">
+              <label for="OPENAI_MODEL_RESEARCH">Summary Model</label>
+              <input type="text" id="OPENAI_MODEL_RESEARCH" name="OPENAI_MODEL_RESEARCH" value="{{ config.get('OPENAI_MODEL_RESEARCH', '') }}" placeholder="gpt-4.1-mini">
+            </div>
+          </div>
+          <button type="button" class="btn btn-secondary btn-test" onclick="testSummaryModel()">测试摘要模型</button>
+          <div id="summary-test-result" class="test-result"></div>
+        </section>
+
+        <section class="config-section">
+          <div class="config-section-title">复核模型</div>
+          <div class="config-grid">
+            <div class="config-field config-field-full">
+              <label class="config-toggle">
+                <input type="checkbox" id="LLM_REVIEW_ENABLED" name="LLM_REVIEW_ENABLED" value="true"
+                  {% if config.get('LLM_REVIEW_ENABLED', 'true').lower() in ['true', '1', 'yes', 'on'] %}checked{% endif %}>
+                <span>启用 LLM 三级复核（一级复核 / 二级仲裁 / 专家终审）</span>
+              </label>
+              <div class="config-help" style="margin-top: 6px;">
+                关闭后所有 LLM 复核都会跳过（status=skipped），算法初判直接生效。
+                复核相关字段（COLLECTION_BASE_URL/APIKEY/MODEL）保留，便于随时恢复，
+                也不影响摘要模型 (OPENAI_*) 的调用。
+              </div>
+            </div>
+            <div class="config-field">
+              <label for="COLLECTION_BASE_URL">Base URL</label>
+              <input type="text" id="COLLECTION_BASE_URL" name="COLLECTION_BASE_URL" value="{{ config.get('COLLECTION_BASE_URL', '') }}" placeholder="https://openrouter.ai/api/v1">
+            </div>
+            <div class="config-field">
+              <label for="COLLECTION_APIKEY">API Key</label>
+              <input type="password" id="COLLECTION_APIKEY" name="COLLECTION_APIKEY" value="{{ config.get('COLLECTION_APIKEY', '') }}" placeholder="sk-...">
+            </div>
+            <div class="config-field config-field-full">
+              <label for="COLLECTION_MODEL">Review Model</label>
+              <input type="text" id="COLLECTION_MODEL" name="COLLECTION_MODEL" value="{{ config.get('COLLECTION_MODEL', '') }}" placeholder="qwen3.6-plus-free">
+            </div>
+            <div class="config-field config-field-full">
+              <label for="COLLECTION_REVIEW_MAX_TOKENS">Review Max Tokens</label>
+              <input type="number" id="COLLECTION_REVIEW_MAX_TOKENS" name="COLLECTION_REVIEW_MAX_TOKENS" min="256" max="4096" value="{{ config.get('COLLECTION_REVIEW_MAX_TOKENS', '900') }}" placeholder="900">
+            </div>
+          </div>
+          <button type="button" class="btn btn-secondary btn-test" onclick="testReviewModel()">测试复核模型</button>
+          <div id="review-test-result" class="test-result"></div>
+        </section>
+
+        <section class="config-section">
+          <div class="config-section-title">通用配置</div>
+          <div class="config-grid">
+            <div class="config-field">
+              <label for="TAVILY_API_KEY">Tavily API Key</label>
+              <input type="password" id="TAVILY_API_KEY" name="TAVILY_API_KEY" value="{{ config.get('TAVILY_API_KEY', '') }}" placeholder="tvly-...">
+            </div>
+            <div class="config-field">
+              <label for="FOOTBALL_API_KEY">Football API Key</label>
+              <input type="password" id="FOOTBALL_API_KEY" name="FOOTBALL_API_KEY" value="{{ config.get('FOOTBALL_API_KEY', '') }}">
+            </div>
+            <div class="config-field config-field-full">
+              <label for="NETWORK_SEARCH_URL">Network Search URL</label>
+              <input type="text" id="NETWORK_SEARCH_URL" name="NETWORK_SEARCH_URL" value="{{ config.get('NETWORK_SEARCH_URL', '') }}" placeholder="https://api.tavily.com">
+            </div>
+          </div>
+        </section>
+
+        <section class="config-section">
+          <div class="config-section-title">高级配置</div>
+          <div class="config-grid">
+            <div class="config-field config-field-full">
+              <label for="MODEL_OPTIONS">Model Options (逗号分隔)</label>
+              <input type="text" id="MODEL_OPTIONS" name="MODEL_OPTIONS" value="{{ config.get('MODEL_OPTIONS', '') }}" placeholder="gpt-4.1-mini,qwen3.6-plus-free">
+            </div>
+            <div class="config-field config-field-full">
+              <label for="AGENT_MODEL_MAP">Agent Model Map (JSON)</label>
+              <textarea id="AGENT_MODEL_MAP" name="AGENT_MODEL_MAP" rows="4" placeholder='{"summary":"gpt-4.1-mini","review":"qwen3.6-plus-free"}'>{{ config.get('AGENT_MODEL_MAP', '') }}</textarea>
+            </div>
+          </div>
+        </section>
+
+        <div class="config-actions">
+          <button type="submit" class="btn btn-primary">保存配置</button>
+          <a href="{{ url_for('index') }}" class="btn btn-secondary">取消</a>
+        </div>
+      </form>
+    </main>
+  </div>
+
+  <script>
+    async function runModelTest(resultId, url, payload) {
+      const resultDiv = document.getElementById(resultId);
+      resultDiv.textContent = '测试中...';
+      resultDiv.className = 'test-result test-result-loading';
+
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams(payload)
+        });
+        const result = await response.json();
+        const details = [];
+        if (result.response) {
+          details.push('响应: ' + result.response);
+        }
+        if (result.detail) {
+          details.push('详情: ' + result.detail);
+        }
+
+        if (result.success) {
+          resultDiv.textContent = '成功：' + result.message;
+          resultDiv.className = 'test-result test-result-success';
+          if (details.length) {
+            resultDiv.textContent += ' | ' + details.join(' | ');
+          }
+        } else {
+          resultDiv.textContent = '失败：' + result.message;
+          resultDiv.className = 'test-result test-result-error';
+          if (details.length) {
+            resultDiv.textContent += ' | ' + details.join(' | ');
+          }
+        }
+      } catch (error) {
+        resultDiv.textContent = '失败：请求异常 - ' + error.message;
+        resultDiv.className = 'test-result test-result-error';
+      }
+    }
+
+    function testSummaryModel() {
+      return runModelTest('summary-test-result', '{{ url_for("config_test_openai") }}', {
+        base_url: document.getElementById('OPENAI_BASE_URL').value,
+        api_key: document.getElementById('OPENAI_API_KEY').value,
+        model: document.getElementById('OPENAI_MODEL_RESEARCH').value
+      });
+    }
+
+    function testReviewModel() {
+      return runModelTest('review-test-result', '{{ url_for("config_test_collection") }}', {
+        base_url: document.getElementById('COLLECTION_BASE_URL').value,
+        api_key: document.getElementById('COLLECTION_APIKEY').value,
+        model: document.getElementById('COLLECTION_MODEL').value,
+        max_tokens: document.getElementById('COLLECTION_REVIEW_MAX_TOKENS').value
+      });
+    }
+  </script>
+</body>
+</html>

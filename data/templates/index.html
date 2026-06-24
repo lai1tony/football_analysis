@@ -1,0 +1,1446 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>足球分析智能系统</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <div class="page-glow page-glow-1"></div>
+  <div class="page-glow page-glow-2"></div>
+  {% set current_status = 'failed' if current and current['collection_status'] == 'failed' else ('done' if current and current['collection_status'] == 'success' else 'idle') %}
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand-mark">Match Insight Console</div>
+        <h1>足球分析智能系统</h1>
+        <p>对赛同步、数据采集、预测生成与赛后反馈。</p>
+        <p class="source-version-marker">源码服务 · 让球盘TOP3版 · {{ app_version }}</p>
+      </div>
+
+      <form method="get" action="{{ url_for('index') }}" class="stack-form issue-form">
+        <label for="issue">期号筛选</label>
+        <select id="issue" name="issue" onchange="this.form.submit()">
+          <option value="">全部期号</option>
+          {% for issue in issues %}
+          <option value="{{ issue }}" {% if selected_issue == issue %}selected{% endif %}>{{ issue }}</option>
+          {% endfor %}
+        </select>
+        {% if selected_match_id %}
+        <input type="hidden" name="match_id" value="{{ selected_match_id }}">
+        {% endif %}
+      </form>
+
+      <a href="{{ url_for('config_page') }}" class="btn btn-secondary">系统配置</a>
+
+      <form method="post" action="{{ url_for('sync_view') }}" class="stack-form" data-busy-form>
+        <input type="hidden" name="match_id" value="{{ selected_match_id }}">
+        <input type="hidden" name="issue" value="{{ selected_issue }}">
+        <button
+          type="submit"
+          class="btn btn-secondary"
+          data-idle-text="同步当前对赛"
+          data-busy-text="同步中..."
+          {% if db_status['read_only'] %}disabled title="数据库当前只读，无法同步"{% endif %}
+        >同步当前对赛</button>
+      </form>
+
+      <form method="post" action="{{ url_for('sync_issue_view') }}" class="stack-form issue-backfill-form" data-busy-form>
+        <label for="manual_issue">补入错过期号</label>
+        <div class="issue-backfill-row">
+          <input
+            id="manual_issue"
+            name="manual_issue"
+            type="text"
+            inputmode="numeric"
+            pattern="\d+"
+            placeholder="例如 26069"
+            autocomplete="off"
+            required
+            {% if db_status['read_only'] %}disabled title="数据库当前只读，无法补入"{% endif %}
+          >
+          <button
+            type="submit"
+            class="btn btn-secondary"
+            data-idle-text="补入"
+            data-busy-text="补入中..."
+            {% if db_status['read_only'] %}disabled title="数据库当前只读，无法补入"{% endif %}
+          >补入</button>
+        </div>
+      </form>
+
+      <form method="post" action="{{ url_for('collect_all') }}" class="stack-form" data-busy-form data-progress-form="collect">
+        <input type="hidden" name="match_id" value="{{ selected_match_id }}">
+        <input type="hidden" name="issue" value="{{ selected_issue }}">
+        <button
+          type="submit"
+          class="btn btn-primary"
+          data-idle-text="采集全部对赛"
+          data-busy-text="批量采集中..."
+          {% if db_status['read_only'] %}disabled title="数据库当前只读，无法采集"{% endif %}
+        >采集全部对赛</button>
+      </form>
+
+      <form method="post" action="{{ url_for('predict_all') }}" class="stack-form" data-busy-form data-progress-form="predict">
+        <input type="hidden" name="match_id" value="{{ selected_match_id }}">
+        <input type="hidden" name="issue" value="{{ selected_issue }}">
+        <button
+          type="submit"
+          class="btn btn-accent"
+          data-idle-text="预测当前期全部对赛"
+          data-busy-text="批量预测中..."
+          {% if db_status['read_only'] %}disabled title="数据库当前只读，无法预测"{% endif %}
+        >预测当前期全部对赛</button>
+      </form>
+
+      <form method="post" action="{{ url_for('settle_all') }}" class="stack-form" data-busy-form data-progress-form="settle">
+        <input type="hidden" name="match_id" value="{{ selected_match_id }}">
+        <input type="hidden" name="issue" value="{{ selected_issue }}">
+        <button
+          type="submit"
+          class="btn btn-secondary"
+          data-idle-text="同步赛果并结算当前期"
+          data-busy-text="赛果同步与结算中..."
+          {% if db_status['read_only'] %}disabled title="数据库当前只读，无法结算"{% endif %}
+        >同步赛果并结算当前期</button>
+      </form>
+
+      <div class="panel panel-compact">
+        <div class="panel-title">反馈概览</div>
+        {% set active_strategy_replay = learning_overview.get('active_strategy_replay', {}) %}
+        <div class="insight-list">
+          <div class="insight-item">
+            <span>历史反馈场次</span>
+            <strong>{{ feedback_summary['total_predictions'] }}</strong>
+          </div>
+          <div class="insight-item">
+            <span>历史命中率</span>
+            <strong>{{ '%.1f'|format(feedback_summary['hit_rate'] * 100) }}%</strong>
+          </div>
+          <div class="insight-item">
+            <span>历史 ROI</span>
+            <strong>{{ '%.3f'|format(feedback_summary['total_roi']) }}</strong>
+          </div>
+          <div class="insight-item">
+            <span>历史让球命中率</span>
+            <strong>{{ '%.1f'|format(feedback_summary.get('handicap_hit_rate', 0) * 100) }}%</strong>
+          </div>
+          <div class="insight-item">
+            <span>历史让球 ROI</span>
+            <strong>{{ '%.3f'|format(feedback_summary.get('handicap_total_roi', 0)) }}</strong>
+          </div>
+          {% if active_strategy_replay %}
+          <div class="insight-item">
+            <span>当前策略样本</span>
+            <strong>{{ active_strategy_replay.get('sample_count', 0) }}</strong>
+          </div>
+          <div class="insight-item">
+            <span>当前策略执行率</span>
+            <strong>{{ '%.1f'|format(active_strategy_replay.get('action_share', 0) * 100) }}%</strong>
+          </div>
+          <div class="insight-item">
+            <span>当前策略让球命中率</span>
+            <strong>{{ '%.1f'|format(active_strategy_replay.get('hit_rate', 0) * 100) }}%</strong>
+          </div>
+          {% endif %}
+        </div>
+        <div class="feedback-action-grid">
+          <form method="post" action="{{ url_for('history_backtest') }}" data-busy-form data-progress-form="predict">
+            <input type="hidden" name="match_id" value="{{ selected_match_id }}">
+            <input type="hidden" name="issue" value="{{ selected_issue }}">
+            <button
+              type="submit"
+              class="btn btn-secondary"
+              data-idle-text="回测历史"
+              data-busy-text="历史回测中..."
+              {% if db_status['read_only'] %}disabled title="数据库当前只读，无法回测历史"{% endif %}
+            >回测历史</button>
+          </form>
+          <form method="post" action="{{ url_for('history_settle') }}" data-busy-form data-progress-form="settle">
+            <input type="hidden" name="match_id" value="{{ selected_match_id }}">
+            <input type="hidden" name="issue" value="{{ selected_issue }}">
+            <button
+              type="submit"
+              class="btn btn-secondary"
+              data-idle-text="结算历史"
+              data-busy-text="历史结算中..."
+              {% if db_status['read_only'] %}disabled title="数据库当前只读，无法结算历史"{% endif %}
+            >结算历史</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">对赛列表</div>
+        <div class="match-list">
+          {% for match in matches %}
+          <a class="match-card {% if selected_match_id == match['match_id'] %}active{% endif %}" href="{{ url_for('index', match_id=match['match_id'], issue=selected_issue) }}">
+            <div class="match-top">
+              <span>{{ match['match_no'] }}. {{ match['league'] }}</span>
+              {% if match['collection_status'] == 'failed' %}
+              <span class="badge badge-warning">采集异常</span>
+              {% elif match['collection_status'] == 'success' %}
+              <span class="badge">已采集</span>
+              {% else %}
+              <span class="badge badge-muted">未采集</span>
+              {% endif %}
+            </div>
+            <div class="match-name">{{ match['home_team'] }} vs {{ match['away_team'] }}</div>
+            <div class="match-meta">{{ match['match_time'] }} | match_id {{ match['match_id'] }}</div>
+          </a>
+          {% endfor %}
+        </div>
+      </div>
+    </aside>
+
+    <main class="content">
+      {% if status_message %}
+      <div class="status-banner status-banner-{{ status_level }}">
+        {{ status_message }}
+      </div>
+      {% endif %}
+
+      <section
+        class="task-progress-panel {% if active_task_id %}is-visible{% endif %}"
+        id="taskProgressPanel"
+        data-active-task-id="{{ active_task_id }}"
+      >
+        <div class="task-progress-head">
+          <div>
+            <div class="task-progress-eyebrow">任务进度</div>
+            <div class="task-progress-title" id="taskProgressTitle">等待开始</div>
+          </div>
+          <div class="task-progress-state" id="taskProgressState">空闲</div>
+        </div>
+        <div class="task-progress-track">
+          <div class="task-progress-fill" id="taskProgressFill"></div>
+        </div>
+        <div class="task-progress-meta" id="taskProgressMeta">当前没有进行中的任务。</div>
+        <div class="task-progress-grid">
+          <div class="task-progress-card">
+            <div class="task-progress-label">当前场次</div>
+            <div class="task-progress-value" id="taskProgressMatch">-</div>
+          </div>
+          <div class="task-progress-card">
+            <div class="task-progress-label">当前步骤</div>
+            <div class="task-progress-value" id="taskProgressStep">-</div>
+          </div>
+          <div class="task-progress-card">
+            <div class="task-progress-label">完成数</div>
+            <div class="task-progress-value" id="taskProgressCount">0 / 0</div>
+          </div>
+        </div>
+      </section>
+
+      {% if top_picks and top_picks|length > 0 %}
+      <section class="section-card top-picks-section" aria-label="本期精选TOP3">
+        <div class="top-picks-header">
+          <div class="top-picks-title">
+            <span class="top-picks-icon">🏆</span>
+            本期精选 TOP3
+            <span class="top-picks-issue">期号 {{ selected_issue }}</span>
+          </div>
+          <div class="top-picks-subtitle">按让球盘推荐动作精选，优先主推/轻仓与让球EV</div>
+          <div class="top-picks-summary">
+            <div class="top-picks-summary-item">
+              <span>已结算</span>
+              <strong>{{ top_picks_summary['settled_count'] }}/{{ top_picks|length }}</strong>
+            </div>
+            <div class="top-picks-summary-item top-picks-summary-hit">
+              <span>命中</span>
+              <strong>{{ top_picks_summary['hit_count'] }}</strong>
+            </div>
+            <div class="top-picks-summary-item top-picks-summary-miss">
+              <span>错误</span>
+              <strong>{{ top_picks_summary['miss_count'] }}</strong>
+            </div>
+            <div class="top-picks-summary-item top-picks-summary-rate">
+              <span>命中率</span>
+              <strong>{{ '%.1f'|format(top_picks_summary['hit_rate'] * 100) }}%</strong>
+            </div>
+          </div>
+        </div>
+        <div class="top-picks-grid">
+          {% for pick in top_picks %}
+          <a class="top-pick-card top-pick-rank-{{ pick['rank'] }} top-pick-result-{{ pick['top_pick_result_status'] }}"
+             href="{{ url_for('index', issue=selected_issue, match_id=pick['match_id']) }}">
+            <div class="top-pick-rank-badge">
+              {% if pick['rank'] == 1 %}🥇{% elif pick['rank'] == 2 %}🥈{% else %}🥉{% endif %}
+              #{{ pick['rank'] }}
+            </div>
+            <div class="top-pick-body">
+              <div class="top-pick-league">{{ pick['league'] }}</div>
+              <div class="top-pick-teams">{{ pick['home_team'] }} vs {{ pick['away_team'] }}</div>
+              <div class="top-pick-meta">
+                <span class="top-pick-outcome top-pick-outcome-{{ pick['recommended_outcome'] }}">
+                  {{ pick['handicap_side_label'] or {'home':'主队','away':'客队'}.get(pick['recommended_outcome'], pick['recommended_outcome']) }}
+                </span>
+                <span class="top-pick-action">{{ pick['recommendation'] }}</span>
+                <span class="top-pick-result-pill">
+                  {% if pick['top_pick_result_status'] == 'hit' %}让球命中{% elif pick['top_pick_result_status'] == 'miss' %}让球错误{% else %}待结算{% endif %}
+                </span>
+              </div>
+              {% if pick['is_settled'] %}
+              <div class="top-pick-settlement">
+                让球赛果 {{ {'home':'主队赢盘','away':'客队赢盘','push':'走水'}.get(pick['actual_result'], pick['actual_result']) }}
+                {% if pick['actual_score'] %}<span>{{ pick['actual_score'] }}</span>{% endif %}
+              </div>
+              {% endif %}
+              <div class="top-pick-scores">
+                <span class="top-pick-score-item">让球信心 {{ '%.0f'|format(pick['confidence_score'] * 100) }}%</span>
+                <span class="top-pick-score-item">让球EV {{ '%+.3f'|format(pick['handicap_expected_value'] or pick['ev_score']) }}</span>
+                <span class="top-pick-score-item">综合 {{ '%.1f'|format(pick['composite_score'] * 100) }}</span>
+              </div>
+              <div class="top-pick-reason">{{ pick['reason'] }}</div>
+            </div>
+          </a>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
+
+
+      <section class="prediction-result-topbar" aria-label="赛后结果与赛前预测对比">
+        <div class="prediction-result-topbar-head">
+          <div>
+            <div class="prediction-result-eyebrow">赛后结果与赛前预测对比</div>
+            <div class="prediction-result-scope">
+              {% if selected_issue %}当前期号 {{ selected_issue }}{% else %}全部历史{% endif %}
+            </div>
+          </div>
+          <div class="prediction-result-rate">
+            {{ '%.1f'|format(prediction_result_summary['hit_rate'] * 100) }}%
+          </div>
+        </div>
+        <div class="prediction-result-grid">
+          <div class="prediction-result-stat">
+            <span>已结算场次</span>
+            <strong>{{ prediction_result_summary['total_predictions'] }}</strong>
+          </div>
+          <div class="prediction-result-stat prediction-result-stat-hit">
+            <span>预测正确</span>
+            <strong>{{ prediction_result_summary['hit_predictions'] }}</strong>
+          </div>
+          <div class="prediction-result-stat prediction-result-stat-miss">
+            <span>预测错误</span>
+            <strong>{{ prediction_result_summary['miss_predictions'] }}</strong>
+          </div>
+          <div class="prediction-result-stat">
+            <span>让球已结算</span>
+            <strong>{{ prediction_result_summary.get('handicap_total_predictions', 0) }}</strong>
+          </div>
+          <div class="prediction-result-stat prediction-result-stat-hit">
+            <span>让球命中率</span>
+            <strong>{{ '%.1f'|format(prediction_result_summary.get('handicap_hit_rate', 0) * 100) }}%</strong>
+          </div>
+          <div class="prediction-result-stat">
+            <span>让球 ROI</span>
+            <strong>{{ '%.3f'|format(prediction_result_summary.get('handicap_total_roi', 0)) }}</strong>
+          </div>
+          <div class="prediction-result-stat prediction-result-stat-rate">
+            <span>成功率</span>
+            <strong>{{ '%.1f'|format(prediction_result_summary['hit_rate'] * 100) }}%</strong>
+          </div>
+        </div>
+      </section>
+
+      {% if current %}
+      <div class="collection-status-bar">
+        <div class="collection-status collection-status-{{ current_status }}" id="collectionStatus">
+          <span class="status-dot"></span>
+          <span class="status-text">
+            {% if current['collection_status'] == 'failed' %}采集异常{% elif current['collection_status'] == 'success' %}已完成采集{% else %}未开始采集{% endif %}
+          </span>
+        </div>
+        <div class="collection-status-meta" id="collectionStatusMeta">
+          {% if current['collection_status'] == 'failed' %}
+          {{ current['collection_failure_reason'] or '采集维度不完整，请重新采集。' }}
+          {% elif current['collection_status'] == 'success' %}
+          完成时间 {{ current['collected_at'] }}
+          {% else %}
+          可从下方按钮发起当前对赛采集和预测。
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="hero-grid">
+        <div class="hero-card hero-card-status hero-card-status-{{ current_status }}">
+          <div class="hero-card-label">采集状态</div>
+          <div class="hero-card-value" id="heroStatusValue">
+            {% if current['collection_status'] == 'failed' %}异常{% elif current['collection_status'] == 'success' %}已完成{% else %}未采集{% endif %}
+          </div>
+        </div>
+        <div class="hero-card">
+          <div class="hero-card-label">期号</div>
+          <div class="hero-card-value">{{ current['issue'] or '-' }}</div>
+        </div>
+        <div class="hero-card">
+          <div class="hero-card-label">比赛时间</div>
+          <div class="hero-card-value">{{ current['match_time'] or '-' }}</div>
+        </div>
+        <div class="hero-card">
+          <div class="hero-card-label">联赛</div>
+          <div class="hero-card-value">{{ current['league'] or '-' }}</div>
+        </div>
+        <div class="hero-card hero-card-matchup">
+          <div class="hero-card-label">对阵球队</div>
+          <div class="hero-card-value">{{ current['home_team'] }} <span class="vs-separator">vs</span> {{ current['away_team'] }}</div>
+        </div>
+      </div>
+
+      <div class="hero-action-bar">
+        <form method="post" action="{{ url_for('collect_single', match_id=current['match_id']) }}" data-busy-form data-progress-form="collect">
+          <input type="hidden" name="issue" value="{{ selected_issue }}">
+          <button
+            type="submit"
+            class="btn btn-primary"
+            data-idle-text="采集当前对赛"
+            data-busy-text="采集中..."
+            {% if db_status['read_only'] %}disabled title="数据库当前只读，无法采集"{% endif %}
+          >采集当前对赛</button>
+        </form>
+        <form method="post" action="{{ url_for('predict_single', match_id=current['match_id']) }}" data-busy-form data-progress-form="predict">
+          <input type="hidden" name="issue" value="{{ selected_issue }}">
+          <button
+            type="submit"
+            class="btn btn-accent"
+            data-idle-text="生成当前对赛预测"
+            data-busy-text="预测中..."
+            {% if db_status['read_only'] %}disabled title="数据库当前只读，无法预测"{% endif %}
+          >生成当前对赛预测</button>
+        </form>
+        <form method="post" action="{{ url_for('settle_single', match_id=current['match_id']) }}" data-busy-form data-progress-form="settle">
+          <input type="hidden" name="issue" value="{{ selected_issue }}">
+          <button
+            type="submit"
+            class="btn btn-secondary"
+            data-idle-text="同步赛果并结算当前场次"
+            data-busy-text="当前场次结算中..."
+            {% if db_status['read_only'] %}disabled title="数据库当前只读，无法结算"{% endif %}
+          >同步赛果并结算当前场次</button>
+        </form>
+      </div>
+
+      <div class="summary-grid">
+        <div class="summary-card">
+          <div class="summary-label">当前对赛总数</div>
+          <div class="summary-value">{{ stats['total_matches'] }}</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">采集成功场次</div>
+          <div class="summary-value">{{ stats['success_analyses'] }}</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">采集失败场次</div>
+          <div class="summary-value">{{ stats['failed_analyses'] }}</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">最近采集时间</div>
+          <div class="summary-value">{{ current['collected_at'] or '-' }}</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">数据来源</div>
+          <div class="summary-value">500 胜负彩 / 数据分析 / 欧指 / 投注</div>
+        </div>
+        <div class="summary-card summary-card-accent">
+          <div class="summary-label">最近预测</div>
+          <div class="summary-value">{{ latest_prediction['created_at'] if latest_prediction else '-' }}</div>
+        </div>
+      </div>
+
+      {% set settlement_outcome_labels = {'home': '主胜', 'draw': '平局', 'away': '客胜'} %}
+      {% set settlement_status_labels = {'': '未结算', 'settled': '自动结算', 'manual_override': '手工修正'} %}
+      {% set roi_source_labels = {'auto': '自动计算', 'manual_override': '手工覆盖'} %}
+      {% set review_bucket_labels = {'keep': '保持', 'promote': '提升', 'downgrade': '降级', 'skipped': '跳过', 'failed': '失败'} %}
+      {% set execution_labels = {'executable': '可执行', 'arbiter_downgraded': '二级仲裁降档', 'manual_review_pending': '待人工复核', 'manual_review_resolved': '已人工处理', 'expert_review_resolved': '专家终审已处理', 'expert_review_failed': '专家终审失败保守观望', 'manual_review_expired': '已过期未处理', 'manual_review_superseded': '已被新 run 覆盖'} %}
+      <section class="section-card settlement-shell">
+        <div class="section-title prediction-shell-title">
+          <div>赛后结算</div>
+          <div class="prediction-shell-title-note">当前页面可直接同步当前期赛果、自动结算 canonical run，并支持单场手工修正。</div>
+        </div>
+        <div class="settlement-shell-body">
+          <div class="settlement-summary-grid">
+            <div class="summary-card">
+              <div class="summary-label">已结算样本</div>
+              <div class="summary-value">{{ feedback_summary['total_predictions'] }}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-label">动作样本</div>
+              <div class="summary-value">{{ feedback_summary['action_predictions'] if feedback_summary.get('action_predictions') is not none else '-' }}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-label">当前赛果</div>
+              <div class="summary-value">
+                {% if current['actual_result'] %}
+                {{ current['actual_score'] or '-' }} / {{ settlement_outcome_labels.get(current['actual_result'], current['actual_result']) }}
+                {% else %}
+                -
+                {% endif %}
+              </div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-label">结算状态</div>
+              <div class="summary-value">{{ settlement_status_labels.get(current['result_status'], '未结算') }}</div>
+            </div>
+          </div>
+
+          <div class="settlement-layout">
+            <div class="settlement-panel">
+              <div class="report-header">当前场次结算快照</div>
+              <div class="settlement-meta-grid">
+                <div class="settlement-meta-item">
+                  <span>比赛</span>
+                  <strong>{{ current['home_team'] }} vs {{ current['away_team'] }}</strong>
+                </div>
+                <div class="settlement-meta-item">
+                  <span>赛果</span>
+                  <strong>
+                    {% if current['actual_result'] %}
+                    {{ settlement_outcome_labels.get(current['actual_result'], current['actual_result']) }}{% if current['actual_score'] %} / {{ current['actual_score'] }}{% endif %}
+                    {% else %}
+                    未同步
+                    {% endif %}
+                  </strong>
+                </div>
+                <div class="settlement-meta-item">
+                  <span>结果来源</span>
+                  <strong>
+                    {% if current['result_source_url'] %}
+                    <a href="{{ current['result_source_url'] }}" target="_blank" rel="noreferrer">查看赛果</a>
+                    {% else %}
+                    -
+                    {% endif %}
+                  </strong>
+                </div>
+                <div class="settlement-meta-item">
+                  <span>同步时间</span>
+                  <strong>{{ current['result_synced_at'] or '-' }}</strong>
+                </div>
+                <div class="settlement-meta-item">
+                  <span>canonical run</span>
+                  <strong>
+                    {% if canonical_prediction %}
+                    #{{ canonical_prediction['run_id'] }} / {{ canonical_prediction['created_at'] }}
+                    {% else %}
+                    -
+                    {% endif %}
+                  </strong>
+                </div>
+                <div class="settlement-meta-item">
+                  <span>结算 ROI</span>
+                  <strong>
+                    {% if canonical_feedback %}
+                    {{ '%.4f'|format(canonical_feedback['roi_delta']) }} / {{ roi_source_labels.get(canonical_feedback['roi_source'], canonical_feedback['roi_source']) }}
+                    {% else %}
+                    -
+                    {% endif %}
+                  </strong>
+                </div>
+                <div class="settlement-meta-item">
+                  <span>推荐动作</span>
+                  <strong>
+                    {% if canonical_prediction %}
+                    {{ canonical_prediction['recommendation'] or '观望' }} / {{ settlement_outcome_labels.get(canonical_prediction['recommended_outcome'], canonical_prediction['recommended_outcome']) }}
+                    {% else %}
+                    -
+                    {% endif %}
+                  </strong>
+                </div>
+                <div class="settlement-meta-item">
+                  <span>结算时间</span>
+                  <strong>{{ canonical_feedback['settled_at'] if canonical_feedback else '-' }}</strong>
+                </div>
+              </div>
+              {% if canonical_feedback and canonical_feedback['notes'] %}
+              <div class="settlement-note">
+                <div class="prediction-review-note-label">备注</div>
+                <div>{{ canonical_feedback['notes'] }}</div>
+              </div>
+              {% endif %}
+            </div>
+
+            <div class="settlement-panel">
+              <div class="report-header">手工修正</div>
+              {% if canonical_prediction %}
+              <form method="post" action="{{ url_for('save_feedback', match_id=current['match_id']) }}" class="settlement-form" data-busy-form>
+                <input type="hidden" name="issue" value="{{ selected_issue }}">
+                <input type="hidden" name="run_id" value="{{ canonical_prediction['run_id'] }}">
+
+                <label class="settlement-field">
+                  <span>实际结果</span>
+                  <select name="actual_result" required>
+                    <option value="home" {% if current['actual_result'] == 'home' %}selected{% endif %}>主胜</option>
+                    <option value="draw" {% if current['actual_result'] == 'draw' %}selected{% endif %}>平局</option>
+                    <option value="away" {% if current['actual_result'] == 'away' %}selected{% endif %}>客胜</option>
+                  </select>
+                </label>
+
+                <label class="settlement-field">
+                  <span>实际比分</span>
+                  <input type="text" name="actual_score" value="{{ current['actual_score'] or '' }}" placeholder="例如 2-1">
+                </label>
+
+                <label class="settlement-field">
+                  <span>ROI 覆盖</span>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    name="roi_delta"
+                    value="{{ '%.4f'|format(canonical_feedback['roi_delta']) if canonical_feedback and canonical_feedback['roi_source'] == 'manual_override' else '' }}"
+                    placeholder="{% if canonical_feedback %}当前 {{ '%.4f'|format(canonical_feedback['roi_delta']) }}{% else %}留空则自动计算{% endif %}"
+                  >
+                </label>
+
+                <label class="settlement-field">
+                  <span>备注</span>
+                  <textarea name="notes" rows="4" placeholder="记录手工修正原因、赔率缺失说明等">{{ canonical_feedback['notes'] if canonical_feedback else '' }}</textarea>
+                </label>
+
+                <div class="settlement-form-hint">留空 ROI 时按当前推荐方向和仓位自动重算；填写 ROI 时会写入手工覆盖值。</div>
+
+                <button type="submit" class="btn btn-accent" data-busy-text="保存修正中...">保存手工修正</button>
+              </form>
+              {% else %}
+              <div class="empty-state settlement-empty">当前场次没有可结算的 canonical run。系统会优先结算开赛前最后一条预测；没有赛前预测时，结算最新一条预测。</div>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {% set active_learning_profile = learning_overview['active_profile'] %}
+      {% set latest_learning_candidate = learning_overview['latest_candidate'] %}
+      <section class="section-card settlement-shell">
+        <div class="section-title prediction-shell-title">
+          <div>学习闭环</div>
+          <div class="prediction-shell-title-note">训练只使用最近 {{ learning_overview['retention_issue_count'] }} 期完整闭环样本；训练完成后需要手动启用，才会影响后续预测。</div>
+        </div>
+        <div class="settlement-shell-body">
+          <div class="settlement-summary-grid">
+              <div class="summary-card">
+                <div class="summary-label">学习窗口期数</div>
+                <div class="summary-value">{{ learning_overview['retention_issue_count'] }}</div>
+              </div>
+              <div class="summary-card">
+                <div class="summary-label">完整已结算期</div>
+                <div class="summary-value">{{ learning_overview['settled_issue_count'] }}/{{ learning_overview['required_issue_count'] }}</div>
+              </div>
+              <div class="summary-card">
+                <div class="summary-label">已结算样本</div>
+              <div class="summary-value">{{ learning_overview['settled_samples'] }}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-label">动作样本</div>
+              <div class="summary-value">{{ learning_overview['action_samples'] }}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-label">当前启用</div>
+              <div class="summary-value">{{ active_learning_profile['status_label'] if active_learning_profile else '基线策略' }}</div>
+            </div>
+          </div>
+
+          <div class="hero-action-bar">
+            <form method="post" action="{{ url_for('learning_train') }}" class="learning-train-form" data-busy-form data-progress-form="learning">
+              <input type="hidden" name="match_id" value="{{ selected_match_id }}">
+              <input type="hidden" name="issue" value="{{ selected_issue }}">
+              <label class="learning-window-field">
+                <span>学习窗口</span>
+                <input
+                  type="number"
+                  name="learning_window_issue_count"
+                  min="{{ learning_overview['min_retention_issue_count'] }}"
+                  max="{{ learning_overview['max_retention_issue_count'] }}"
+                  step="1"
+                  value="{{ learning_overview['retention_issue_count'] }}"
+                >
+              </label>
+              <button
+                type="submit"
+                class="btn btn-primary"
+                data-idle-text="训练学习候选"
+                data-busy-text="训练中..."
+                {% if db_status['read_only'] %}disabled title="数据库当前只读，无法训练"{% endif %}
+              >训练学习候选</button>
+            </form>
+            <form method="post" action="{{ url_for('learning_import_history') }}" data-busy-form data-progress-form="learning">
+              <input type="hidden" name="match_id" value="{{ selected_match_id }}">
+              <input type="hidden" name="issue" value="{{ selected_issue }}">
+              <button
+                type="submit"
+                class="btn btn-secondary"
+                data-idle-text="导入历史闭环"
+                data-busy-text="导入中..."
+                {% if db_status['read_only'] %}disabled title="数据库当前只读，无法导入"{% endif %}
+              >导入历史闭环</button>
+            </form>
+            <form method="post" action="{{ url_for('learning_replay_backfill') }}" data-busy-form data-progress-form="learning">
+              <input type="hidden" name="match_id" value="{{ selected_match_id }}">
+              <input type="hidden" name="issue" value="{{ selected_issue }}">
+              <button
+                type="submit"
+                class="btn btn-secondary"
+                data-idle-text="回放补齐历史期"
+                data-busy-text="回放中..."
+                {% if db_status['read_only'] %}disabled title="数据库当前只读，无法回放补数"{% endif %}
+              >回放补齐历史期</button>
+            </form>
+            {% if latest_learning_candidate and latest_learning_candidate['ready_for_activation'] %}
+            <form method="post" action="{{ url_for('learning_activate', profile_id=latest_learning_candidate['learning_profile_id']) }}" data-busy-form data-progress-form="learning">
+              <input type="hidden" name="match_id" value="{{ selected_match_id }}">
+              <input type="hidden" name="issue" value="{{ selected_issue }}">
+              <button
+                type="submit"
+                class="btn btn-accent"
+                data-idle-text="启用候选 #{{ latest_learning_candidate['learning_profile_id'] }}"
+                data-busy-text="启用中..."
+                {% if db_status['read_only'] %}disabled title="数据库当前只读，无法启用"{% endif %}
+              >启用候选 #{{ latest_learning_candidate['learning_profile_id'] }}</button>
+            </form>
+            {% endif %}
+            {% if active_learning_profile %}
+            <form method="post" action="{{ url_for('learning_deactivate') }}" data-busy-form data-progress-form="learning">
+              <input type="hidden" name="match_id" value="{{ selected_match_id }}">
+              <input type="hidden" name="issue" value="{{ selected_issue }}">
+              <button
+                type="submit"
+                class="btn btn-secondary"
+                data-idle-text="停用当前学习配置"
+                data-busy-text="停用中..."
+                {% if db_status['read_only'] %}disabled title="数据库当前只读，无法停用"{% endif %}
+              >停用当前学习配置</button>
+            </form>
+            {% endif %}
+          </div>
+
+          <div class="settlement-layout">
+            <div class="settlement-panel">
+              <div class="report-header">当前启用配置</div>
+              {% if active_learning_profile %}
+              <div class="settlement-meta-grid">
+                <div class="settlement-meta-item"><span>Profile</span><strong>#{{ active_learning_profile['learning_profile_id'] }}</strong></div>
+                <div class="settlement-meta-item"><span>启用时间</span><strong>{{ active_learning_profile['activated_at'] or '-' }}</strong></div>
+                <div class="settlement-meta-item"><span>概率校准</span><strong>{{ active_learning_profile['calibrator_status_label'] }}</strong></div>
+                <div class="settlement-meta-item"><span>动作阈值</span><strong>{{ active_learning_profile['threshold_status_label'] }}</strong></div>
+                <div class="settlement-meta-item"><span>训练/验证</span><strong>{{ active_learning_profile['training_samples'] }} / {{ active_learning_profile['validation_samples'] }}</strong></div>
+                <div class="settlement-meta-item"><span>动作样本</span><strong>{{ active_learning_profile['training_action_samples'] }} / {{ active_learning_profile['validation_action_samples'] }}</strong></div>
+              </div>
+              {% if active_learning_profile['notes'] %}
+              <div class="settlement-note">
+                <div class="prediction-review-note-label">说明</div>
+                <div>{{ active_learning_profile['notes'] }}</div>
+              </div>
+              {% endif %}
+              {% else %}
+              <div class="empty-state settlement-empty">当前没有已启用的学习配置，后续预测仍按基线 blended 概率和默认动作阈值执行。</div>
+              {% endif %}
+            </div>
+
+            <div class="settlement-panel">
+              <div class="report-header">最新候选 / 最近训练</div>
+              {% if latest_learning_candidate %}
+              {% set candidate_calibration = latest_learning_candidate['validation_metrics'].get('calibration', {}) %}
+              {% set candidate_thresholds = latest_learning_candidate['validation_metrics'].get('thresholds', {}) %}
+              {% set candidate_window = latest_learning_candidate['sample_summary'].get('all_rows', {}) %}
+              <div class="settlement-meta-grid">
+                <div class="settlement-meta-item"><span>Profile</span><strong>#{{ latest_learning_candidate['learning_profile_id'] }}</strong></div>
+                <div class="settlement-meta-item"><span>状态</span><strong>{{ latest_learning_candidate['status_label'] }}</strong></div>
+                <div class="settlement-meta-item"><span>概率校准</span><strong>{{ latest_learning_candidate['calibrator_status_label'] }}</strong></div>
+                <div class="settlement-meta-item"><span>动作阈值</span><strong>{{ latest_learning_candidate['threshold_status_label'] }}</strong></div>
+                <div class="settlement-meta-item"><span>样本窗口</span><strong>{{ candidate_window.get('issue_range', ['-','-'])[0] or '-' }} ~ {{ candidate_window.get('issue_range', ['-','-'])[1] or '-' }}</strong></div>
+                <div class="settlement-meta-item"><span>训练/验证</span><strong>{{ latest_learning_candidate['training_samples'] }} / {{ latest_learning_candidate['validation_samples'] }}</strong></div>
+              </div>
+              <div class="settlement-note">
+                <div class="prediction-review-note-label">验证摘要</div>
+                <div>
+                  LogLoss {{ '%.4f'|format(candidate_calibration.get('baseline', {}).get('log_loss', 0)) }} -> {{ '%.4f'|format(candidate_calibration.get('candidate', {}).get('log_loss', 0)) }};
+                  Brier {{ '%.4f'|format(candidate_calibration.get('baseline', {}).get('brier_score', 0)) }} -> {{ '%.4f'|format(candidate_calibration.get('candidate', {}).get('brier_score', 0)) }};
+                  final ROI {{ '%.4f'|format(candidate_thresholds.get('baseline', {}).get('final', {}).get('total_roi', 0)) }} -> {{ '%.4f'|format(candidate_thresholds.get('candidate', {}).get('final', {}).get('total_roi', 0)) }}
+                </div>
+              </div>
+              {% set candidate_strategy = latest_learning_candidate['validation_metrics'].get('target_strategy', {}) %}
+              {% if candidate_strategy %}
+              {% set candidate_strategy_validation = candidate_strategy.get('validation', {}) %}
+              {% set candidate_strategy_best = candidate_strategy.get('best_candidate', {}).get('validation_metrics', {}) %}
+              {% set candidate_strategy_frontier = candidate_strategy.get('frontier', {}) %}
+              {% set candidate_best_hit = candidate_strategy_frontier.get('best_hit', {}).get('validation_metrics', {}) %}
+              {% set candidate_best_covered = candidate_strategy_frontier.get('best_covered', {}).get('validation_metrics', {}) %}
+              {% set candidate_gaps = candidate_strategy_frontier.get('gaps', {}) %}
+              {% set candidate_review_signals = candidate_strategy.get('review_signals', {}).get('validation_rows', {}) %}
+              <div class="settlement-note">
+                <div class="prediction-review-note-label">{{ '%.0f'|format(candidate_strategy.get('target_metrics', {}).get('target_hit_rate', 0.75) * 100) }}% win-rate target</div>
+                <div>
+                  status {{ candidate_strategy.get('status', '-') }};
+                  hit {{ '%.1f'|format(candidate_strategy_validation.get('hit_rate', 0) * 100) }}%,
+                  action {{ '%.1f'|format(candidate_strategy_validation.get('action_share', 0) * 100) }}%,
+                  watch {{ '%.1f'|format(candidate_strategy_validation.get('watch_share', 0) * 100) }}%.
+                  {% if candidate_strategy_best %}
+                  best {{ '%.1f'|format(candidate_strategy_best.get('hit_rate', 0) * 100) }}% / {{ '%.1f'|format(candidate_strategy_best.get('action_share', 0) * 100) }}%.
+                  {% endif %}
+                  {% if candidate_strategy_frontier %}
+                  best-hit {{ '%.1f'|format(candidate_best_hit.get('hit_rate', 0) * 100) }}% / {{ '%.1f'|format(candidate_best_hit.get('action_share', 0) * 100) }}%;
+                  covered {{ '%.1f'|format(candidate_best_covered.get('hit_rate', 0) * 100) }}% / {{ '%.1f'|format(candidate_best_covered.get('action_share', 0) * 100) }}%;
+                  gap {{ '%.1f'|format(candidate_gaps.get('hit_rate_gap', 0) * 100) }}pp / {{ '%.1f'|format(candidate_gaps.get('action_share_gap', 0) * 100) }}pp.
+                  {% endif %}
+                  {% if candidate_review_signals %}
+                  LLM {{ candidate_review_signals.get('llm_completed', 0) }}/{{ candidate_review_signals.get('sample_count', 0) }};
+                  arbiter {{ candidate_review_signals.get('arbiter_completed', 0) }}/{{ candidate_review_signals.get('sample_count', 0) }};
+                  expert-source {{ '%.1f'|format(candidate_review_signals.get('expert_source_share', 0) * 100) }}%.
+                  {% endif %}
+                </div>
+              </div>
+              {% endif %}
+              {% if latest_learning_candidate['notes'] %}
+              <div class="settlement-note">
+                <div class="prediction-review-note-label">备注</div>
+                <div>{{ latest_learning_candidate['notes'] }}</div>
+              </div>
+              {% endif %}
+              {% else %}
+              <div class="empty-state settlement-empty">还没有学习训练记录。当前可以直接点击“训练学习候选”，首次大概率会因为样本不足得到 `insufficient_samples`，这是预期行为。</div>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </section>
+
+
+      <section class="section-card settlement-shell">
+        <div class="section-title prediction-shell-title">
+          <div>专家复核记录</div>
+          <div class="prediction-shell-title-note">高风险场次由专家 LLM 自动终审；历史 pending 记录仍可手工处理。</div>
+        </div>
+        <div class="settlement-shell-body">
+          {% if pending_manual_reviews %}
+          <div class="table-shell">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>比赛</th>
+                  <th>机器建议</th>
+                  <th>仲裁原因</th>
+                  <th>终审处理</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in pending_manual_reviews %}
+                {% set is_expert_review = row['effective_action_source'] in ['expert_llm', 'expert_llm_failed'] %}
+                <tr>
+                  <td>
+                    <div>{{ row['home_team'] }} vs {{ row['away_team'] }}</div>
+                    <div class="table-subline">{{ row['issue'] }} / {{ row['match_time'] }} / #{{ row['run_id'] }}</div>
+                  </td>
+                  <td>
+                    <div>{{ row['recommendation'] or '观望' }} / {{ settlement_outcome_labels.get(row['recommended_outcome'], row['recommended_outcome']) }}</div>
+                    <div class="table-subline">模型仓位 {{ '%.2f'|format(row['suggested_stake_pct'] or 0) }}%</div>
+                  </td>
+                  <td>
+                    <div>{{ row['arbiter_review_decision'] or 'manual_review' }}</div>
+                    <div class="table-subline">{{ row['manual_review_reason'] or row['arbiter_review_reason'] or '-' }}</div>
+                  </td>
+                  <td>
+                    {% if is_expert_review %}
+                    <div>{{ '专家失败保守观望' if row['effective_action_source'] == 'expert_llm_failed' else '专家自动终审' }}</div>
+                    <div class="table-subline">执行 {{ row['effective_recommendation'] or '观望' }} / 仓位 {{ '%.2f'|format(row['effective_stake_pct'] or 0) }}%</div>
+                    <div class="table-subline">{{ row['manual_review_notes'] or '-' }}</div>
+                    {% else %}
+                    <form method="post" action="{{ url_for('manual_review_resolve', run_id=row['run_id']) }}" class="stack-form">
+                      <input type="hidden" name="match_id" value="{{ row['match_id'] }}">
+                      <input type="hidden" name="issue" value="{{ selected_issue or row['issue'] }}">
+                      <select name="effective_recommendation">
+                        <option value="主推" {% if row['recommendation'] == '主推' %}selected{% endif %}>主推</option>
+                        <option value="轻仓" {% if row['recommendation'] == '轻仓' %}selected{% endif %}>轻仓</option>
+                        <option value="观望" {% if row['recommendation'] == '观望' %}selected{% endif %}>观望</option>
+                      </select>
+                      <input type="text" name="notes" placeholder="人工复核备注">
+                      <button type="submit" class="btn btn-secondary">提交人工处理</button>
+                    </form>
+                    {% endif %}
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <div class="empty-state settlement-empty">当前筛选范围内没有专家复核记录。</div>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="section-card prediction-shell">
+        <div class="section-title prediction-shell-title">
+          <div>AI 预测中台</div>
+          <div class="prediction-shell-title-note">主链方向仍由独立模型决定；一级 LLM 复核动作强度；二级仲裁命中高风险后交给专家 LLM 自动终审。</div>
+          <div class="prediction-shell-title-note prediction-shell-title-note-muted">模型建议、执行动作、专家终审已经拆开展示，避免把“建议动作”和“真实执行”混成一个口径。</div>
+        </div>
+        {% if latest_prediction %}
+        {% set outcome_labels = {'home': '主胜', 'draw': '平局', 'away': '客胜'} %}
+        {% set review_labels = {'keep': '保持', 'promote': '提升', 'downgrade': '降级', 'abstain': '跳过'} %}
+        {% set arbiter_labels = {'allow': '放行', 'downgrade': '降档', 'manual_review': '转专家终审', 'skip': '否决', 'not_triggered': '未触发', 'skipped': '跳过', 'failed': '失败'} %}
+        {% set execution_labels = {'executable': '可执行', 'arbiter_downgraded': '二级仲裁降档', 'manual_review_pending': '待人工复核', 'manual_review_resolved': '已人工处理', 'expert_review_resolved': '专家终审已处理', 'expert_review_failed': '专家终审失败保守观望', 'manual_review_expired': '已过期未处理', 'manual_review_superseded': '已被新 run 覆盖'} %}
+        {% set action_tones = {'主推': 'prediction-action-primary', '轻仓': 'prediction-action-light', '观望': 'prediction-action-watch'} %}
+        {% set outcome_tones = {'home': 'outcome-tone-home', 'draw': 'outcome-tone-draw', 'away': 'outcome-tone-away'} %}
+        {% set review_tone = 'prediction-review-pill-failed' if latest_prediction['llm_review_status'] == 'failed' else ('prediction-review-pill-skipped' if latest_prediction['llm_review_status'] == 'skipped' else 'prediction-review-pill-completed') %}
+        {% set latest_review_reason_label = '失败原因' if latest_prediction['llm_review_status'] == 'failed' else ('跳过原因' if latest_prediction['llm_review_status'] == 'skipped' else '复核理由') %}
+        {% set calibrated_prob_ready = latest_prediction['learning_profile_id'] and ((latest_prediction['calibrated_home_prob'] or 0) > 0 or (latest_prediction['calibrated_draw_prob'] or 0) > 0 or (latest_prediction['calibrated_away_prob'] or 0) > 0) %}
+        {% set display_home_prob = latest_prediction['calibrated_home_prob'] if calibrated_prob_ready else latest_prediction['final_home_prob'] %}
+        {% set display_draw_prob = latest_prediction['calibrated_draw_prob'] if calibrated_prob_ready else latest_prediction['final_draw_prob'] %}
+        {% set display_away_prob = latest_prediction['calibrated_away_prob'] if calibrated_prob_ready else latest_prediction['final_away_prob'] %}
+        {% set latest_execution_status = 'executable' %}
+        {% if latest_prediction['effective_action_source'] == 'expert_llm_failed' %}
+          {% set latest_execution_status = 'expert_review_failed' %}
+        {% elif latest_prediction['effective_action_source'] == 'expert_llm' %}
+          {% set latest_execution_status = 'expert_review_resolved' %}
+        {% elif latest_prediction['manual_review_status'] == 'pending' %}
+          {% set latest_execution_status = 'manual_review_pending' %}
+        {% elif latest_prediction['manual_review_status'] == 'resolved' %}
+          {% set latest_execution_status = 'manual_review_resolved' %}
+        {% elif latest_prediction['manual_review_status'] == 'expired' %}
+          {% set latest_execution_status = 'manual_review_expired' %}
+        {% elif latest_prediction['manual_review_status'] == 'superseded' %}
+          {% set latest_execution_status = 'manual_review_superseded' %}
+        {% elif latest_prediction['arbiter_review_status'] == 'completed' and latest_prediction['arbiter_review_decision'] in ['downgrade', 'skip'] and latest_prediction['effective_action_source'] == 'arbiter' %}
+          {% set latest_execution_status = 'arbiter_downgraded' %}
+        {% endif %}
+        {% set latest_effective_action = latest_prediction['effective_recommendation'] or ('观望' if latest_prediction['manual_review_status'] in ['pending', 'expired', 'superseded'] else (latest_prediction['recommendation'] or '观望')) %}
+        {% set latest_effective_stake = latest_prediction['effective_stake_pct'] if latest_prediction['effective_recommendation'] else (0 if latest_prediction['manual_review_status'] in ['pending', 'expired', 'superseded'] else latest_prediction['suggested_stake_pct']) %}
+        {% set latest_recommended_outcome = latest_prediction['recommended_outcome'] or latest_prediction['algo_recommended_outcome'] %}
+        <div class="prediction-shell-body">
+          <div class="prediction-metrics-grid">
+            <div class="prediction-metric-card prediction-metric-card-highlight">
+              <div class="prediction-label">推荐动作</div>
+              <div class="prediction-action-chip {{ action_tones.get(latest_effective_action, 'prediction-action-watch') }}">{{ latest_effective_action or '-' }}</div>
+              <div class="prediction-result-label">推荐结果</div>
+              <div class="prediction-outcome {{ outcome_tones.get(latest_recommended_outcome, '') }}">{{ outcome_labels.get(latest_recommended_outcome, latest_recommended_outcome or '-') }}</div>
+              <div class="prediction-review-pill {{ review_tone }}">
+                {% if latest_prediction['llm_review_status'] == 'failed' %}
+                LLM复核：失败
+                {% elif latest_prediction['llm_review_status'] == 'skipped' %}
+                LLM复核：跳过
+                {% else %}
+                LLM复核：{{ review_labels.get(latest_prediction['llm_review_decision'], '跳过') }}
+                {% endif %}
+              </div>
+              {% if latest_prediction['llm_review_reason'] %}
+              <div class="prediction-review-note {{ review_tone }}">
+                <div class="prediction-review-note-label">{{ latest_review_reason_label }}</div>
+                <div>{{ latest_prediction['llm_review_reason'] }}</div>
+              </div>
+              {% endif %}
+              {% if latest_prediction['learning_profile_id'] %}
+              <div class="prediction-review-note {{ 'prediction-review-pill-completed' if calibrated_prob_ready else 'prediction-review-pill-skipped' }}">
+                <div class="prediction-review-note-label">学习配置</div>
+                <div>
+                  本次预测使用学习配置 #{{ latest_prediction['learning_profile_id'] }}
+                  {% if calibrated_prob_ready %}
+                  ，主展示概率为校准后 final 概率，原始 blended 概率保留在下方对照。
+                  {% else %}
+                  ，当前只启用了动作阈值或未启用校准器，因此概率展示仍为原始 blended。
+                  {% endif %}
+                </div>
+              </div>
+              {% endif %}
+            </div>
+            <div class="prediction-metric-card prediction-metric-card-highlight">
+              <div class="prediction-label">让球盘推荐</div>
+              <div class="prediction-action-chip {{ action_tones.get(latest_prediction['handicap_recommendation'], 'prediction-action-watch') }}">{{ latest_prediction['handicap_pick_label'] or '观望' }}</div>
+              <div class="prediction-result-label">即时盘口</div>
+              <div class="prediction-outcome">{{ latest_prediction['handicap_line_label'] }}</div>
+              <div class="prediction-sub">源均值 {{ '%+.3f'|format(latest_prediction['handicap_line'] or 0) }} · 覆盖率 主 {{ '%.1f'|format((latest_prediction['handicap_home_cover_prob'] or 0) * 100) }}% / 客 {{ '%.1f'|format((latest_prediction['handicap_away_cover_prob'] or 0) * 100) }}%</div>
+              <div class="prediction-sub">EV {{ '%+.1f'|format((latest_prediction['handicap_expected_value'] or 0) * 100) }}% · 信心 {{ '%.1f'|format((latest_prediction['handicap_confidence'] or 0) * 10) }}/10</div>
+            </div>
+            <div class="prediction-metric-card">
+              <div class="prediction-label">综合置信度</div>
+              <div class="prediction-main">{{ '%.1f'|format(latest_prediction['confidence_score'] * 10) }}/10</div>
+              <div class="prediction-sub">风险等级 {{ latest_prediction['risk_level'] }}</div>
+            </div>
+            <div class="prediction-metric-card">
+              <div class="prediction-label">建议仓位</div>
+              <div class="prediction-main">{{ '%.2f'|format(latest_prediction['suggested_stake_pct']) }}%</div>
+              <div class="prediction-sub">基于 EV 与质量评估</div>
+            </div>
+            <div class="prediction-metric-card prediction-score-card">
+              <div class="prediction-label">预测比分</div>
+              <div class="prediction-main">{{ latest_prediction['predicted_score'] or '-' }}</div>
+              {% if latest_prediction['score_display_items'] %}
+              <div class="score-chip-row">
+                {% for score_item in latest_prediction['score_display_items'] %}
+                <div class="score-chip {% if loop.first %}score-chip-primary{% endif %}">
+                  <span>{{ score_item['label'] }}</span>
+                  <strong>{{ score_item['score'] }}</strong>
+                  {% if score_item['probability'] %}
+                  <em>{{ '%.0f'|format(score_item['probability'] * 100) }}%</em>
+                  {% endif %}
+                </div>
+                {% endfor %}
+              </div>
+              {% endif %}
+              <div class="prediction-sub compact">
+                {% if latest_prediction['predicted_score_status'] == 'completed' %}
+                {{ latest_prediction['predicted_score_model_name'] or '复核模型' }} · {{ latest_prediction['predicted_score_reason'] or '已生成比分组' }}
+                {% elif latest_prediction['predicted_score_status'] == 'failed' %}
+                比分预测失败，已保留量化候选
+                {% else %}
+                未调用复核模型，展示量化候选
+                {% endif %}
+              </div>
+            </div>
+          </div>
+
+          <div class="prediction-split-grid">
+            <div class="prediction-panel">
+              <div class="prediction-panel-title">三向概率</div>
+              <div class="prob-row"><span>主胜</span><strong>{{ '%.1f'|format(display_home_prob * 100) }}%</strong></div>
+              <div class="prob-row"><span>平局</span><strong>{{ '%.1f'|format(display_draw_prob * 100) }}%</strong></div>
+              <div class="prob-row"><span>客胜</span><strong>{{ '%.1f'|format(display_away_prob * 100) }}%</strong></div>
+              {% if calibrated_prob_ready %}
+              <div class="prediction-sub">原始 blended：{{ '%.1f'|format(latest_prediction['final_home_prob'] * 100) }}% / {{ '%.1f'|format(latest_prediction['final_draw_prob'] * 100) }}% / {{ '%.1f'|format(latest_prediction['final_away_prob'] * 100) }}%</div>
+              {% endif %}
+            </div>
+            <div class="prediction-panel">
+              <div class="prediction-panel-title">让球盘</div>
+              <div class="prob-row"><span>初盘</span><strong>{{ latest_prediction['handicap_initial_line_label'] }}</strong></div>
+              <div class="prob-row"><span>即时盘</span><strong>{{ latest_prediction['handicap_line_label'] }}</strong></div>
+              <div class="prob-row"><span>主队水位</span><strong>{{ '%.3f'|format(latest_prediction['handicap_home_odds'] or 0) }}</strong></div>
+              <div class="prob-row"><span>客队水位</span><strong>{{ '%.3f'|format(latest_prediction['handicap_away_odds'] or 0) }}</strong></div>
+              <div class="prediction-sub compact">源均值：初盘 {{ '%+.3f'|format(latest_prediction['handicap_initial_line'] or 0) }}，即时 {{ '%+.3f'|format(latest_prediction['handicap_line'] or 0) }}。{{ latest_prediction['handicap_reason_display'] or latest_prediction['handicap_reason'] or '暂无让球盘推荐说明' }}</div>
+            </div>
+          </div>
+
+          {% set home_bias = display_home_prob - latest_prediction['market_home_prob'] %}
+          {% set draw_bias = display_draw_prob - latest_prediction['market_draw_prob'] %}
+          {% set away_bias = display_away_prob - latest_prediction['market_away_prob'] %}
+          <div class="prediction-compare-panel">
+            <div class="prediction-panel-title">独立模型 vs 市场比较</div>
+            <div class="prediction-compare-grid">
+              <div class="prediction-compare-card">
+                <div class="prediction-compare-head">主胜</div>
+                <div class="prediction-compare-main">{{ '%.1f'|format(display_home_prob * 100) }}%</div>
+                <div class="prediction-compare-meta">市场 {{ '%.1f'|format(latest_prediction['market_home_prob'] * 100) }}%</div>
+                <div class="prediction-compare-meta">偏差 {{ '%+.1f'|format(home_bias * 100) }}pp</div>
+                <div class="prediction-compare-ev">EV {{ '%+.1f'|format(latest_prediction['ev_home'] * 100) }}%</div>
+              </div>
+              <div class="prediction-compare-card">
+                <div class="prediction-compare-head">平局</div>
+                <div class="prediction-compare-main">{{ '%.1f'|format(display_draw_prob * 100) }}%</div>
+                <div class="prediction-compare-meta">市场 {{ '%.1f'|format(latest_prediction['market_draw_prob'] * 100) }}%</div>
+                <div class="prediction-compare-meta">偏差 {{ '%+.1f'|format(draw_bias * 100) }}pp</div>
+                <div class="prediction-compare-ev">EV {{ '%+.1f'|format(latest_prediction['ev_draw'] * 100) }}%</div>
+              </div>
+              <div class="prediction-compare-card">
+                <div class="prediction-compare-head">客胜</div>
+                <div class="prediction-compare-main">{{ '%.1f'|format(display_away_prob * 100) }}%</div>
+                <div class="prediction-compare-meta">市场 {{ '%.1f'|format(latest_prediction['market_away_prob'] * 100) }}%</div>
+                <div class="prediction-compare-meta">偏差 {{ '%+.1f'|format(away_bias * 100) }}pp</div>
+                <div class="prediction-compare-ev">EV {{ '%+.1f'|format(latest_prediction['ev_away'] * 100) }}%</div>
+              </div>
+            </div>
+          </div>
+
+          {% if latest_prediction['manual_review_status'] == 'pending' %}
+          <div class="prediction-compare-panel">
+            <div class="prediction-panel-title">当前场次人工复核处理</div>
+            <form method="post" action="{{ url_for('manual_review_resolve', run_id=latest_prediction['run_id']) }}" class="stack-form">
+              <input type="hidden" name="match_id" value="{{ latest_prediction['match_id'] }}">
+              <input type="hidden" name="issue" value="{{ selected_issue }}">
+              <select name="effective_recommendation">
+                <option value="主推" {% if latest_prediction['recommendation'] == '主推' %}selected{% endif %}>主推</option>
+                <option value="轻仓" {% if latest_prediction['recommendation'] == '轻仓' %}selected{% endif %}>轻仓</option>
+                <option value="观望" {% if latest_prediction['recommendation'] == '观望' %}selected{% endif %}>观望</option>
+              </select>
+              <input type="text" name="notes" placeholder="填写人工复核备注">
+              <button type="submit" class="btn btn-secondary">确认人工处理</button>
+            </form>
+            <div class="prediction-sub">该表单只调整动作强度，不允许改主胜 / 平局 / 客胜方向。</div>
+          </div>
+          {% endif %}
+
+          <div class="prediction-detail-stack">
+            <div class="report-card prediction-detail-block">
+              <div class="report-header">最新预测报告</div>
+              <pre class="report-body">{{ latest_prediction['final_report'] }}</pre>
+            </div>
+            <div class="run-history-card prediction-detail-block">
+              <div class="report-header">最新预测记录</div>
+              <div class="run-history-list">
+                {% for run in prediction_runs %}
+                {% set run_execution_status = 'executable' %}
+                {% if run['effective_action_source'] == 'expert_llm_failed' %}
+                  {% set run_execution_status = 'expert_review_failed' %}
+                {% elif run['effective_action_source'] == 'expert_llm' %}
+                  {% set run_execution_status = 'expert_review_resolved' %}
+                {% elif run['manual_review_status'] == 'pending' %}
+                  {% set run_execution_status = 'manual_review_pending' %}
+                {% elif run['manual_review_status'] == 'resolved' %}
+                  {% set run_execution_status = 'manual_review_resolved' %}
+                {% elif run['manual_review_status'] == 'expired' %}
+                  {% set run_execution_status = 'manual_review_expired' %}
+                {% elif run['manual_review_status'] == 'superseded' %}
+                  {% set run_execution_status = 'manual_review_superseded' %}
+                {% elif run['arbiter_review_status'] == 'completed' and run['arbiter_review_decision'] in ['downgrade', 'skip'] and run['effective_action_source'] == 'arbiter' %}
+                  {% set run_execution_status = 'arbiter_downgraded' %}
+                {% endif %}
+                {% set run_effective_action = run['effective_recommendation'] or ('观望' if run['manual_review_status'] in ['pending', 'expired', 'superseded'] else (run['recommendation'] or '观望')) %}
+                <div class="run-history-item">
+                  <div>
+                    <div class="run-title">#{{ run['run_id'] }} {{ run['recommendation'] or '观望' }}</div>
+                    <div class="run-meta">{{ run['created_at'] }} | 置信度 {{ '%.1f'|format(run['confidence_score'] * 10) }}/10 | 风险 {{ run['risk_level'] }} | 复核 {% if run['llm_review_status'] == 'failed' %}失败{% elif run['llm_review_status'] == 'skipped' %}跳过{% else %}{{ review_labels.get(run['llm_review_decision'], '跳过') }}{% endif %}</div>
+                    <div class="run-meta">执行 {{ execution_labels.get(run_execution_status, run_execution_status) }} | 动作 {{ run_effective_action }} | 来源 {{ run['effective_action_source'] or 'model' }}</div>
+                    <div class="run-meta">预测比分 {{ run['predicted_score'] or '-' }}{% if run['predicted_score_confidence'] %} | 比分置信 {{ '%.0f'|format(run['predicted_score_confidence'] * 100) }}%{% endif %}</div>
+                    {% if run['llm_review_reason'] %}
+                    <div class="run-review-reason {% if run['llm_review_status'] == 'failed' %}is-failed{% elif run['llm_review_status'] == 'skipped' %}is-skipped{% endif %}">
+                      {% if run['llm_review_status'] == 'failed' %}
+                      失败原因：
+                      {% elif run['llm_review_status'] == 'skipped' %}
+                      跳过原因：
+                      {% else %}
+                      复核理由：
+                      {% endif %}
+                      {{ run['llm_review_reason'] }}
+                    </div>
+                    {% endif %}
+                    {% if run['arbiter_review_reason'] %}
+                    <div class="run-review-reason {% if run['manual_review_status'] == 'pending' %}is-skipped{% endif %}">
+                      二级仲裁：{{ run['arbiter_review_reason'] }}
+                    </div>
+                    {% endif %}
+                    {% if run['effective_action_source'] in ['expert_llm', 'expert_llm_failed'] and run['manual_review_notes'] %}
+                    <div class="run-review-reason {% if run['effective_action_source'] == 'expert_llm_failed' %}is-failed{% endif %}">
+                      专家终审：{{ run['manual_review_notes'] }}
+                    </div>
+                    {% endif %}
+                  </div>
+                  <div class="run-pick {{ outcome_tones.get(run['recommended_outcome'], '') }}">{{ outcome_labels.get(run['recommended_outcome'], run['recommended_outcome']) }}</div>
+                </div>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+        </div>
+        {% else %}
+        <div class="prediction-empty-shell">
+          <div class="empty-state prediction-empty">当前比赛还没有预测结果。先采集，再生成预测。</div>
+        </div>
+        {% endif %}
+      </section>
+
+      {% for section in sections %}
+      <section class="section-card section-card-{{ section['variant'] }}">
+        <div class="section-title">{{ section['title'] }}</div>
+        {% if section['variant'] == 'source-notes' %}
+        {% set source_notes = section['source_notes_summary'] %}
+        <div class="source-notes-shell">
+          <div class="source-map-list">
+            {% for group in source_notes['groups'] %}
+            <div class="source-map-row">
+              <div class="source-map-key">{{ group['title'] }}</div>
+              <div class="source-map-links">
+                {% for link in group['links'] %}
+                <a href="{{ link['url'] }}" target="_blank" rel="noreferrer">{{ link['label'] }}</a>
+                {% endfor %}
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+          <div class="source-remark-block">
+            <div class="source-remark-title">简要备注</div>
+            <div class="source-remark-list">
+              {% if source_notes['remarks'] %}
+                {% for line in source_notes['remarks'] %}
+                <div class="source-remark-item">{{ line }}</div>
+                {% endfor %}
+              {% else %}
+              <div class="source-remark-item source-remark-item-muted">无额外备注</div>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+        {% else %}
+        <div class="kv-table kv-table-{{ section['variant'] }}">
+          {% for item in section['items'] %}
+          <div class="kv-row">
+            <div class="kv-key">{{ item['label'] }}</div>
+            <div class="kv-value {% if item['field'] in ['source_match_url', 'shuju_url', 'ouzhi_url', 'touzhu_url', 'media_source_links'] %}is-links{% endif %}">
+              {% if item['field'] in ['source_match_url', 'shuju_url', 'ouzhi_url', 'touzhu_url'] and item['value'] %}
+              <a href="{{ item['value'] }}" target="_blank" rel="noreferrer">{{ item['value'] }}</a>
+              {% elif item['field'] == 'media_source_links' and item['value'] %}
+                {% for line in item['value'].split('\n') %}
+                  {% if line.strip() %}
+                  <a href="{{ line.strip() }}" target="_blank" rel="noreferrer">{{ line.strip() }}</a>
+                  {% endif %}
+                {% endfor %}
+              {% else %}
+              <span>{{ item['value'] or '-' }}</span>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </section>
+      {% endfor %}
+      {% else %}
+      <div class="empty-state">暂无对赛数据，请先同步当前对赛。</div>
+      {% endif %}
+    </main>
+  </div>
+
+  <script>
+    (function () {
+      var forms = document.querySelectorAll('[data-busy-form]');
+      var progressForms = document.querySelectorAll('[data-progress-form]');
+      var status = document.getElementById('collectionStatus');
+      var statusMeta = document.getElementById('collectionStatusMeta');
+      var heroStatusValue = document.getElementById('heroStatusValue');
+      var progressPanel = document.getElementById('taskProgressPanel');
+      var progressTitle = document.getElementById('taskProgressTitle');
+      var progressState = document.getElementById('taskProgressState');
+      var progressFill = document.getElementById('taskProgressFill');
+      var progressMeta = document.getElementById('taskProgressMeta');
+      var progressMatch = document.getElementById('taskProgressMatch');
+      var progressStep = document.getElementById('taskProgressStep');
+      var progressCount = document.getElementById('taskProgressCount');
+      var activeTaskId = progressPanel ? progressPanel.getAttribute('data-active-task-id') : '';
+      var activeStatusUrl = activeTaskId ? '/tasks/' + activeTaskId : '';
+      var activeCompleteUrl = window.location.pathname + '?match_id={{ selected_match_id }}&issue={{ selected_issue }}';
+      var pollTimer = null;
+      var activeProgressKind = '';
+
+      function setCollectingState() {
+        if (!status) {
+          return;
+        }
+        status.classList.remove('collection-status-idle', 'collection-status-done', 'collection-status-failed');
+        status.classList.add('collection-status-loading');
+        var text = status.querySelector('.status-text');
+        if (text) {
+          text.textContent = '处理中';
+        }
+        if (statusMeta) {
+          statusMeta.textContent = '正在处理当前操作，请稍后刷新结果。';
+        }
+        if (heroStatusValue) {
+          heroStatusValue.textContent = '处理中';
+        }
+      }
+
+      function setCollectButtonsDisabled(disabled) {
+        progressForms.forEach(function (form) {
+          var button = form.querySelector('button[type="submit"]');
+          if (!button) {
+            return;
+          }
+          button.disabled = disabled;
+          button.classList.toggle('is-busy', disabled);
+          button.textContent = disabled
+            ? (button.getAttribute('data-busy-text') || '处理中...')
+            : (button.getAttribute('data-idle-text') || button.textContent);
+        });
+      }
+
+      function showProgressPanel() {
+        if (!progressPanel) {
+          return;
+        }
+        progressPanel.classList.add('is-visible');
+      }
+
+      function getProgressKindLabel(kind) {
+        if (String(kind || '').indexOf('settle') === 0) {
+          return '结算';
+        }
+        if (String(kind || '').indexOf('score') === 0) {
+          return '比分';
+        }
+        if (String(kind || '').indexOf('learning') === 0) {
+          return '学习';
+        }
+        if (String(kind || '').indexOf('predict') === 0) {
+          return '预测';
+        }
+        return '采集';
+      }
+
+      function buildResultUrl(task) {
+        var target = new URL(activeCompleteUrl, window.location.origin);
+        var message = String(task.message || '').trim();
+        if (!message) {
+          return target.toString();
+        }
+        var level = String(task.level || '').trim();
+        if (task.status === 'failed') {
+          level = 'error';
+        } else if (!level) {
+          level = 'success';
+          if (
+            message.indexOf('跳过') >= 0 ||
+            message.indexOf('异常') >= 0 ||
+            message.indexOf('失败') >= 0 ||
+            message.indexOf('未生成预测') >= 0 ||
+            message.indexOf('未采集') >= 0 ||
+            message.indexOf('没有可结算') >= 0 ||
+            message.indexOf('样本不足') >= 0 ||
+            message.indexOf('无增益') >= 0 ||
+            message.indexOf('未通过验证') >= 0
+          ) {
+            level = 'warning';
+          }
+        }
+        target.searchParams.set('message', message);
+        target.searchParams.set('level', level);
+        return target.toString();
+      }
+
+      function updateProgressView(task) {
+        if (!progressPanel || !task) {
+          return;
+        }
+        showProgressPanel();
+        activeProgressKind = task.kind || activeProgressKind;
+
+        var total = Number(task.total_items || 0);
+        var completed = Number(task.completed_items || 0);
+        var currentIndex = Number(task.current_item_index || 0);
+        var percent = Number(task.progress_percent || 0);
+        var stateText = '处理中';
+        if (task.status === 'completed') {
+          stateText = '已完成';
+        } else if (task.status === 'failed') {
+          stateText = '失败';
+        } else if (task.status === 'pending') {
+          stateText = '排队中';
+        }
+
+        progressTitle.textContent = task.title || (getProgressKindLabel(activeProgressKind) + '任务');
+        progressState.textContent = stateText;
+        progressMeta.textContent = task.message || '正在处理中...';
+        progressMatch.textContent = task.current_item_label || '-';
+        progressStep.textContent = task.current_step || '-';
+        progressCount.textContent = total > 0
+          ? (completed + ' / ' + total + '（当前 ' + Math.max(currentIndex, completed) + '）')
+          : '-';
+        progressFill.style.width = percent + '%';
+
+        if (status) {
+          status.classList.remove('collection-status-idle', 'collection-status-done', 'collection-status-failed');
+          status.classList.add(task.status === 'failed' ? 'collection-status-idle' : 'collection-status-loading');
+          var statusText = status.querySelector('.status-text');
+          if (statusText) {
+            statusText.textContent = stateText;
+          }
+        }
+        if (statusMeta) {
+          statusMeta.textContent = task.message || '正在处理当前操作，请稍后刷新结果。';
+        }
+        if (heroStatusValue) {
+          heroStatusValue.textContent = stateText;
+        }
+      }
+
+      function finishProgress(task) {
+        updateProgressView(task);
+        clearTimeout(pollTimer);
+        pollTimer = null;
+        progressMeta.textContent = (task.message || (task.status === 'failed' ? '任务失败' : '任务完成')) + '，正在刷新结果...';
+        window.setTimeout(function () {
+          window.location.href = buildResultUrl(task);
+        }, task.status === 'failed' ? 500 : 800);
+      }
+
+      function pollTask() {
+        if (!activeStatusUrl) {
+          return;
+        }
+        fetch(activeStatusUrl, { headers: { 'Accept': 'application/json' } })
+          .then(function (response) {
+            if (!response.ok) {
+                throw new Error('状态查询失败');
+            }
+            return response.json();
+          })
+          .then(function (task) {
+            updateProgressView(task);
+            if (task.status === 'completed' || task.status === 'failed') {
+              finishProgress(task);
+              return;
+            }
+            pollTimer = window.setTimeout(pollTask, 1000);
+          })
+          .catch(function (error) {
+            progressMeta.textContent = '进度查询失败：' + error.message;
+            setCollectButtonsDisabled(false);
+          });
+      }
+
+      forms.forEach(function (form) {
+        form.addEventListener('submit', function () {
+          if (form.getAttribute('data-progress-form')) {
+            return;
+          }
+          var button = form.querySelector('button[type="submit"]');
+          if (button) {
+            button.disabled = true;
+            button.classList.add('is-busy');
+            button.textContent = button.getAttribute('data-busy-text') || '处理中...';
+          }
+          setCollectingState();
+        });
+      });
+
+      progressForms.forEach(function (form) {
+        form.addEventListener('submit', function (event) {
+          event.preventDefault();
+          clearTimeout(pollTimer);
+          pollTimer = null;
+          setCollectButtonsDisabled(true);
+          setCollectingState();
+          showProgressPanel();
+          activeProgressKind = form.getAttribute('data-progress-form') || '';
+          progressTitle.textContent = getProgressKindLabel(activeProgressKind) + '任务';
+          progressState.textContent = '启动中';
+          progressMeta.textContent = '正在创建' + getProgressKindLabel(activeProgressKind) + '任务...';
+          progressMatch.textContent = '-';
+          progressStep.textContent = '-';
+          progressCount.textContent = '0 / 0';
+          progressFill.style.width = '0%';
+
+          fetch(form.action, {
+            method: 'POST',
+            body: new FormData(form),
+            headers: {
+              'X-Requested-With': 'XMLHttpRequest',
+              'Accept': 'application/json'
+            }
+          })
+            .then(function (response) {
+              if (!response.ok) {
+                throw new Error('任务启动失败');
+              }
+              return response.json();
+            })
+            .then(function (payload) {
+              activeTaskId = payload.task_id || '';
+              activeStatusUrl = payload.status_url || '';
+              activeCompleteUrl = payload.complete_url || activeCompleteUrl;
+              if (payload.view_url) {
+                window.history.replaceState({}, '', payload.view_url);
+              }
+              pollTask();
+            })
+            .catch(function (error) {
+              progressState.textContent = '失败';
+              progressMeta.textContent = '任务启动失败：' + error.message;
+              setCollectButtonsDisabled(false);
+            });
+        });
+      });
+
+      if (activeTaskId && activeStatusUrl) {
+        setCollectButtonsDisabled(true);
+        pollTask();
+      }
+    })();
+</script>
+</body>
+</html>
