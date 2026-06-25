@@ -551,6 +551,68 @@ class LearningEngineTests(TemporaryDatabaseTestCase):
         self.assertEqual(summary["target_hit_rate"], 0.70)
         self.assertEqual(summary["min_action_share"], 0.60)
 
+    def test_handicap_bucket_strategy_uses_fallback_table_after_primary_miss(self) -> None:
+        row = {
+            "handicap_recommended_side": "",
+            "handicap_recommendation": "观望",
+            "handicap_line": -0.25,
+            "handicap_initial_line": -0.25,
+            "handicap_home_odds": 1.90,
+            "handicap_away_odds": 1.90,
+            "handicap_home_cover_prob": 0.45,
+            "handicap_away_cover_prob": 0.55,
+            "handicap_confidence": 0.72,
+            "quality_score": 0.82,
+            "handicap_actual_result": "away",
+        }
+        primary_features = ["line25"]
+        fallback_features = ["coverdiff10", "conf10"]
+        primary_key = learning_engine._handicap_bucket_key(
+            dict(row, handicap_line=-1.0),
+            primary_features,
+        )
+        fallback_key = learning_engine._handicap_bucket_key(row, fallback_features)
+        strategy = {
+            "strategy_kind": "handicap_bucket_table",
+            "action": "轻仓",
+            "stake_pct": 1.0,
+            "features": primary_features,
+            "buckets": {primary_key: {"side": "home", "sample_count": 6, "hit_rate": 0.8}},
+            "fallback_bucket_tables": [
+                {
+                    "features": fallback_features,
+                    "buckets": {
+                        fallback_key: {"side": "away", "sample_count": 6, "hit_rate": 0.83}
+                    },
+                }
+            ],
+        }
+
+        metrics = learning_engine._handicap_bucket_strategy_metrics([row], strategy)
+
+        self.assertEqual(metrics["action_count"], 1)
+        self.assertEqual(metrics["hit_count"], 1)
+        self.assertEqual(metrics["hit_rate"], 1.0)
+
+        handicap_risk = {
+            "recommendation": "观望",
+            "recommended_side": "",
+            "line": row["handicap_line"],
+            "initial_line": row["handicap_initial_line"],
+            "home_odds": row["handicap_home_odds"],
+            "away_odds": row["handicap_away_odds"],
+            "home_cover_prob": row["handicap_home_cover_prob"],
+            "away_cover_prob": row["handicap_away_cover_prob"],
+            "confidence": row["handicap_confidence"],
+            "quality_score": row["quality_score"],
+            "reason": "base",
+        }
+        applied = prediction_engine._apply_handicap_bucket_strategy(handicap_risk, strategy)
+
+        self.assertEqual(applied["recommendation"], "轻仓")
+        self.assertEqual(applied["recommended_side"], "away")
+        self.assertIn("补充表", applied["reason"])
+
     def test_train_learning_profile_stores_handicap_target_strategy(self) -> None:
         def handicap_row(issue: str, index: int) -> dict[str, object]:
             return {

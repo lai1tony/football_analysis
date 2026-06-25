@@ -46,6 +46,49 @@
         >同步当前对赛</button>
       </form>
 
+      <a
+        href="{{ url_for('index', issue=selected_issue, match_id=selected_match_id, select_matches=1) }}"
+        class="btn btn-secondary btn-selectable"
+      >选择对赛</a>
+
+      {% if show_select_matches %}
+      <div class="panel panel-compact selectable-panel">
+        <div class="panel-title">选择对赛</div>
+        {% if selectable_error %}
+        <div class="selectable-message">{{ selectable_error }}</div>
+        {% elif selectable_matches %}
+        <form method="post" action="{{ url_for('select_matches_view') }}" class="selectable-form">
+          <input type="hidden" name="match_id" value="{{ selected_match_id }}">
+          <input type="hidden" name="issue" value="{{ selected_issue }}">
+          <div class="selectable-list">
+            {% for match in selectable_matches %}
+            {% set is_added = match['match_id'] in available_match_ids %}
+            <label class="selectable-match {% if is_added %}is-added{% endif %}">
+              <input
+                type="checkbox"
+                name="selected_match_ids"
+                value="{{ match['match_id'] }}"
+                {% if is_added or db_status['read_only'] %}disabled{% endif %}
+              >
+              <span>
+                <strong>{{ match['home_team'] }} vs {{ match['away_team'] }}</strong>
+                <em>{{ match['league'] }} · {{ match['match_time'] }} · match_id {{ match['match_id'] }}{% if is_added %} · 已在列表{% endif %}</em>
+              </span>
+            </label>
+            {% endfor %}
+          </div>
+          <button
+            type="submit"
+            class="btn btn-primary"
+            {% if db_status['read_only'] %}disabled title="数据库当前只读，无法添加"{% endif %}
+          >添加勾选对赛</button>
+        </form>
+        {% else %}
+        <div class="selectable-message">当前页面没有可添加的对赛。</div>
+        {% endif %}
+      </div>
+      {% endif %}
+
       <form method="post" action="{{ url_for('sync_issue_view') }}" class="stack-form issue-backfill-form" data-busy-form>
         <label for="manual_issue">补入错过期号</label>
         <div class="issue-backfill-row">
@@ -175,20 +218,35 @@
         <div class="panel-title">对赛列表</div>
         <div class="match-list">
           {% for match in matches %}
-          <a class="match-card {% if selected_match_id == match['match_id'] %}active{% endif %}" href="{{ url_for('index', match_id=match['match_id'], issue=selected_issue) }}">
-            <div class="match-top">
-              <span>{{ match['match_no'] }}. {{ match['league'] }}</span>
-              {% if match['collection_status'] == 'failed' %}
-              <span class="badge badge-warning">采集异常</span>
-              {% elif match['collection_status'] == 'success' %}
-              <span class="badge">已采集</span>
-              {% else %}
-              <span class="badge badge-muted">未采集</span>
-              {% endif %}
-            </div>
-            <div class="match-name">{{ match['home_team'] }} vs {{ match['away_team'] }}</div>
-            <div class="match-meta">{{ match['match_time'] }} | match_id {{ match['match_id'] }}</div>
-          </a>
+          <div class="match-card-shell {% if match['is_selectable_match'] %}custom-match{% endif %}">
+            <a class="match-card {% if selected_match_id == match['match_id'] %}active{% endif %}" href="{{ url_for('index', match_id=match['match_id'], issue=selected_issue) }}">
+              <div class="match-top">
+                <span>{{ match['match_no'] }}. {{ match['league'] }}</span>
+                {% if match['collection_status'] == 'failed' %}
+                <span class="badge badge-warning">采集异常</span>
+                {% elif match['collection_status'] == 'success' %}
+                <span class="badge">已采集</span>
+                {% else %}
+                <span class="badge badge-muted">未采集</span>
+                {% endif %}
+              </div>
+              <div class="match-name">{{ match['home_team'] }} vs {{ match['away_team'] }}</div>
+              <div class="match-meta">{{ match['match_time'] }} | match_id {{ match['match_id'] }}</div>
+            </a>
+            {% if match['is_selectable_match'] %}
+            <form method="post" action="{{ url_for('delete_selectable_match_view', match_id=match['match_id']) }}" class="delete-custom-match-form">
+              <input type="hidden" name="issue" value="{{ selected_issue }}">
+              <input type="hidden" name="current_match_id" value="{{ selected_match_id }}">
+              <button
+                type="submit"
+                class="delete-custom-match"
+                {% if db_status['read_only'] %}disabled title="数据库当前只读，无法删除"{% endif %}
+              >删除</button>
+            </form>
+            {% endif %}
+          </div>
+          {% else %}
+          <div class="match-empty">当前期号没有对赛。</div>
           {% endfor %}
         </div>
       </div>

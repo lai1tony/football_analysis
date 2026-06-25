@@ -13,6 +13,7 @@ from collection_repository import (
     has_issue_top_picks,
 )
 from collector_store import (
+    add_selectable_matches,
     build_sections,
     collect_all_matches,
     collect_match,
@@ -23,6 +24,7 @@ from collector_store import (
     get_feedback_summary,
     get_match_analysis,
     init_db,
+    list_selectable_matches,
     list_issues,
     list_matches_by_issue,
     list_pending_manual_review_runs,
@@ -30,6 +32,7 @@ from collector_store import (
     predict_issue,
     predict_match,
     record_feedback,
+    remove_selectable_match,
     resolve_manual_review,
     settle_match_result,
     settle_issue_results,
@@ -55,6 +58,7 @@ from learning_engine import (
 from historical_import import import_historical_learning_feedback
 from replay_backfill import replay_backfill_learning_feedback
 from progress_service import complete_task, create_task, fail_task, get_task, update_task
+from source_500_client import LIVE_SELECTABLE_URL
 
 
 app = Flask(__name__)
@@ -161,6 +165,9 @@ def _decorate_collection_row(row):
     data["collection_status"] = status
     data["collection_failure_reason"] = (
         get_collection_failure_reason(data) if status == "failed" else ""
+    )
+    data["is_selectable_match"] = (
+        str(data.get("source_match_url", "") or "").strip() == LIVE_SELECTABLE_URL
     )
     return data
 
@@ -540,6 +547,7 @@ def index():
     _ensure_db_initialized()
     selected_match_id = request.args.get("match_id", "")
     selected_issue = request.args.get("issue", "")
+    show_select_matches = request.args.get("select_matches", "").strip() == "1"
     active_task_id = request.args.get("task_id", "").strip()
     status_message = request.args.get("message", "").strip()
     status_level = request.args.get("level", "info").strip() or "info"
@@ -600,6 +608,13 @@ def index():
         else None
     )
     pending_manual_reviews = list_pending_manual_review_runs(selected_issue or None, limit=12)
+    selectable_matches = []
+    selectable_error = ""
+    if show_select_matches and not db_status["read_only"]:
+        try:
+            selectable_matches = list_selectable_matches(selected_issue)
+        except Exception as exc:  # noqa: BLE001
+            selectable_error = f"读取可选对赛失败：{exc}"
 
     stats = get_collection_stats(selected_issue or None)
     feedback_summary = get_feedback_summary()
@@ -633,6 +648,7 @@ def index():
         pending_manual_reviews=pending_manual_reviews,
         selected_match_id=selected_match_id,
         selected_issue=selected_issue,
+        available_match_ids=available_match_ids,
         issues=issues,
         stats=stats,
         feedback_summary=feedback_summary,
@@ -642,6 +658,9 @@ def index():
         status_message=status_message,
         status_level=status_level,
         active_task_id=active_task_id,
+        show_select_matches=show_select_matches,
+        selectable_matches=selectable_matches,
+        selectable_error=selectable_error,
         top_picks=top_picks,
         top_picks_summary=top_picks_summary,
         app_version=APP_VERSION,
@@ -667,6 +686,41 @@ def sync_issue_view():
     return _run_action(
         lambda: sync_issue_matches(issue, return_details=True),
         issue=issue,
+    )
+
+
+@app.post("/select-matches")
+def select_matches_view():
+    _ensure_db_initialized()
+    issue = request.form.get("issue", "").strip()
+    selected_match_ids = request.form.getlist("selected_match_ids")
+    result = add_selectable_matches(
+        selected_match_ids,
+        issue=issue,
+        return_details=True,
+    )
+    matches = result.get("matches", []) if isinstance(result, dict) else []
+    match_id = str(matches[0].get("match_id", "") if matches else request.form.get("match_id", "")).strip()
+    return _index_redirect(
+        match_id=match_id,
+        issue=str(result.get("issue", issue) if isinstance(result, dict) else issue),
+        message=str(result.get("status_message", "") if isinstance(result, dict) else ""),
+        level=str(result.get("status_level", "info") if isinstance(result, dict) else "info"),
+    )
+
+
+@app.post("/select-matches/<match_id>/delete")
+def delete_selectable_match_view(match_id: str):
+    _ensure_db_initialized()
+    issue = request.form.get("issue", "").strip()
+    current_match_id = request.form.get("current_match_id", "").strip()
+    result = remove_selectable_match(match_id, issue=issue, return_details=True)
+    next_match_id = "" if current_match_id == match_id else current_match_id
+    return _index_redirect(
+        match_id=next_match_id,
+        issue=str(result.get("issue", issue) if isinstance(result, dict) else issue),
+        message=str(result.get("status_message", "") if isinstance(result, dict) else ""),
+        level=str(result.get("status_level", "info") if isinstance(result, dict) else "info"),
     )
 
 
