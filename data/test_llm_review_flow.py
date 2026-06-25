@@ -462,6 +462,7 @@ class PredictionEngineTests(unittest.TestCase):
             "motivation_or_schedule_notes": "测试联赛 主队 vs 客队",
             "home_away_form": "正常",
             "european_odds_movement_summary": "平稳",
+            "asian_handicap_summary": "亚盘平稳",
             "betting_heat_summary": "主胜偏热",
         }
         snapshot = {"snapshot_id": 7, "home_rating": 1510, "away_rating": 1485}
@@ -586,6 +587,7 @@ class PredictionEngineTests(unittest.TestCase):
             "motivation_or_schedule_notes": "测试联赛 主队 vs 客队",
             "home_away_form": "正常",
             "european_odds_movement_summary": "平稳",
+            "asian_handicap_summary": "亚盘平稳",
             "betting_heat_summary": "主胜偏热",
         }
         snapshot = {"snapshot_id": 7, "home_rating": 1510, "away_rating": 1485}
@@ -702,6 +704,7 @@ class PredictionEngineTests(unittest.TestCase):
             patch("prediction_engine.run_risk_assessor", return_value=algo_risk),
             patch("prediction_engine.run_llm_recommendation_review", return_value=review),
             patch("prediction_engine.resolve_recommendation", return_value=final_risk),
+            patch("prediction_engine._arbiter_trigger_reasons", return_value=["模型分歧较大"]),
             patch("prediction_engine.run_llm_arbiter_review", return_value=arbiter_review),
             patch("prediction_engine.run_expert_llm_final_review", return_value=expert_review) as mock_expert,
             patch("prediction_engine.generate_llm_summary", return_value=llm),
@@ -1004,7 +1007,7 @@ class PredictionEngineTests(unittest.TestCase):
         ]
         progress_calls: list[dict[str, object]] = []
 
-        def _fake_predict_match(match_id: str, ensure_collected: bool = False, progress_callback=None):
+        def _fake_predict_match(match_id: str, ensure_collected: bool = False, progress_callback=None, **kwargs):
             if progress_callback is not None:
                 progress_callback(current_step="单场处理中", message=f"{match_id} processing")
             if match_id == "M2":
@@ -1031,6 +1034,10 @@ class PredictionEngineTests(unittest.TestCase):
         with (
             patch("prediction_engine.init_db"),
             patch("prediction_engine.list_matches_by_issue", return_value=rows),
+            patch(
+                "prediction_engine.get_collection_failure_reason",
+                side_effect=lambda row: "" if row.get("collected_at") else "未采集",
+            ),
             patch("prediction_engine.predict_match", side_effect=_fake_predict_match),
         ):
             result = prediction_engine.predict_issue("20260428", progress_callback=_progress_callback)
@@ -1060,7 +1067,7 @@ class PredictionEngineTests(unittest.TestCase):
             },
         ]
 
-        def _fake_predict_match(match_id: str, ensure_collected: bool = False, progress_callback=None):
+        def _fake_predict_match(match_id: str, ensure_collected: bool = False, progress_callback=None, **kwargs):
             if match_id == "M2":
                 return {
                     "match_id": match_id,
@@ -1085,6 +1092,7 @@ class PredictionEngineTests(unittest.TestCase):
         with (
             patch("prediction_engine.init_db"),
             patch("prediction_engine.list_matches_by_issue", return_value=rows),
+            patch("prediction_engine.get_collection_failure_reason", return_value=""),
             patch("prediction_engine.predict_match", side_effect=_fake_predict_match),
         ):
             result = prediction_engine.predict_issue("20260428")

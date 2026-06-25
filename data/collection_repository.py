@@ -26,6 +26,7 @@ REQUIRED_ANALYSIS_FIELDS = (
     "injury_or_lineup_notes",
     "motivation_or_schedule_notes",
     "european_odds_movement_summary",
+    "asian_handicap_summary",
     "betting_heat_summary",
 )
 
@@ -834,6 +835,45 @@ def upsert_match_results(results: list[dict]) -> None:
         )
 
     _run_write(_operation)
+
+
+def delete_custom_match(match_id: str, *, source_match_url: str) -> bool:
+    match_id_text = str(match_id or "").strip()
+    source_url_text = str(source_match_url or "").strip()
+    if not match_id_text or not source_url_text:
+        return False
+
+    def _operation(conn: sqlite3.Connection) -> bool:
+        row = conn.execute(
+            """
+            SELECT match_id
+            FROM matches
+            WHERE match_id = ?
+              AND source_match_url = ?
+            """,
+            (match_id_text, source_url_text),
+        ).fetchone()
+        if row is None:
+            return False
+        conn.execute(
+            """
+            DELETE FROM feedback_logs
+            WHERE match_id = ?
+               OR prediction_run_id IN (
+                    SELECT run_id
+                    FROM prediction_runs
+                    WHERE match_id = ?
+               )
+            """,
+            (match_id_text, match_id_text),
+        )
+        conn.execute("DELETE FROM prediction_runs WHERE match_id = ?", (match_id_text,))
+        conn.execute("DELETE FROM feature_snapshots WHERE match_id = ?", (match_id_text,))
+        conn.execute("DELETE FROM analyses WHERE match_id = ?", (match_id_text,))
+        conn.execute("DELETE FROM matches WHERE match_id = ?", (match_id_text,))
+        return True
+
+    return _run_write(_operation)
 
 
 def get_match(match_id: str) -> sqlite3.Row | None:
@@ -2093,21 +2133,37 @@ def get_feedback_summary(issue: str | None = None) -> dict:
         issue_text = str(issue or "").strip()
         params: tuple[Any, ...] = ()
         query = """
-            SELECT
-                COUNT(*) AS total,
-                IFNULL(SUM(CASE WHEN f.hit_recommendation = 1 THEN 1 ELSE 0 END), 0) AS hits,
-                IFNULL(SUM(f.roi_delta), 0) AS total_roi,
-                IFNULL(SUM(CASE WHEN f.handicap_actual_result IN ('home','away','push') THEN 1 ELSE 0 END), 0) AS handicap_total,
-                IFNULL(SUM(CASE WHEN f.handicap_hit = 1 THEN 1 ELSE 0 END), 0) AS handicap_hits,
-                IFNULL(SUM(f.handicap_roi_delta), 0) AS handicap_total_roi
-            FROM feedback_logs f
+            WITH scoped_feedback AS (
+                SELECT
+                    f.*,
+                    p.issue,
+                    CASE
+                        WHEN COALESCE(p.handicap_recommendation, '') <> '观望'
+                             AND p.handicap_recommended_side IN ('home', 'away')
+                             AND f.handicap_actual_result IN ('home', 'away', 'push')
+                        THEN 1
+                        ELSE 0
+                    END AS has_handicap_action
+                FROM feedback_logs f
+                JOIN prediction_runs p ON p.run_id = f.prediction_run_id
         """
         if issue_text:
             query += """
-                JOIN prediction_runs p ON p.run_id = f.prediction_run_id
                 WHERE p.issue = ?
             """
             params = (issue_text,)
+
+        query += """
+            )
+            SELECT
+                COUNT(*) AS total,
+                IFNULL(SUM(CASE WHEN hit_recommendation = 1 THEN 1 ELSE 0 END), 0) AS hits,
+                IFNULL(SUM(roi_delta), 0) AS total_roi,
+                IFNULL(SUM(has_handicap_action), 0) AS handicap_total,
+                IFNULL(SUM(CASE WHEN has_handicap_action = 1 AND handicap_hit = 1 THEN 1 ELSE 0 END), 0) AS handicap_hits,
+                IFNULL(SUM(CASE WHEN has_handicap_action = 1 THEN handicap_roi_delta ELSE 0 END), 0) AS handicap_total_roi
+            FROM scoped_feedback
+        """
 
         row = conn.execute(query, params).fetchone()
         total = int(row["total"] or 0)

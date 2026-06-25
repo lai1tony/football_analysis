@@ -10,7 +10,9 @@ from bs4 import BeautifulSoup
 
 from collection_repository import (
     DEFAULT_ISSUE_RETENTION_COUNT,
+    delete_custom_match,
     get_collection_stats,
+    get_latest_issue,
     get_match,
     get_match_analysis,
     init_db,
@@ -26,7 +28,13 @@ from collection_repository import (
 )
 from collection_strategy import DIMENSION_FIELDS, apply_unified_collection_strategy
 from feature_engine import build_feature_snapshot
-from source_500_client import fetch_current_matches, fetch_html, fetch_issue_matches
+from source_500_client import (
+    LIVE_SELECTABLE_URL,
+    fetch_current_matches,
+    fetch_html,
+    fetch_issue_matches,
+    fetch_live_selectable_matches,
+)
 from source_lineup_client import build_failure_notes, supplement_injury_or_lineup_notes
 from source_supplement_client import supplement_match_data
 
@@ -944,6 +952,95 @@ def sync_issue_matches(issue: str, return_details: bool = False) -> list[dict] |
             "status_level": status_level,
         }
     return matches
+
+
+def list_selectable_matches(issue: str = "") -> list[dict]:
+    issue_text = str(issue or "").strip() or get_latest_issue()
+    return fetch_live_selectable_matches(issue_text)
+
+
+def add_selectable_matches(
+    selected_match_ids: list[str],
+    *,
+    issue: str = "",
+    return_details: bool = False,
+) -> list[dict] | dict[str, object]:
+    selected_ids = {str(match_id or "").strip() for match_id in selected_match_ids}
+    selected_ids.discard("")
+    issue_text = str(issue or "").strip() or get_latest_issue()
+    if not issue_text:
+        result = {
+            "matches": [],
+            "issue": "",
+            "selected_count": len(selected_ids),
+            "status_message": "请先同步当前对赛或选择期号，再添加自选对赛。",
+            "status_level": "warning",
+        }
+        return result if return_details else []
+    if not selected_ids:
+        result = {
+            "matches": [],
+            "issue": issue_text,
+            "selected_count": 0,
+            "status_message": "请至少勾选一场对赛。",
+            "status_level": "warning",
+        }
+        return result if return_details else []
+
+    candidates = fetch_live_selectable_matches(issue_text)
+    matches = [match for match in candidates if str(match.get("match_id", "")).strip() in selected_ids]
+    if matches:
+        upsert_matches(matches)
+
+    missing_count = max(len(selected_ids) - len(matches), 0)
+    if matches and missing_count == 0:
+        status_level = "success"
+        status_message = f"已添加自选对赛 {len(matches)} 场到期号 {issue_text}。"
+    elif matches:
+        status_level = "warning"
+        status_message = (
+            f"已添加自选对赛 {len(matches)} 场到期号 {issue_text}，"
+            f"{missing_count} 场未在最新候选页中命中。"
+        )
+    else:
+        status_level = "warning"
+        status_message = "未能添加自选对赛：所选比赛已不在最新候选页中。"
+
+    result = {
+        "matches": matches,
+        "issue": issue_text,
+        "selected_count": len(selected_ids),
+        "status_message": status_message,
+        "status_level": status_level,
+    }
+    return result if return_details else matches
+
+
+def remove_selectable_match(
+    match_id: str,
+    *,
+    issue: str = "",
+    return_details: bool = False,
+) -> bool | dict[str, object]:
+    match_id_text = str(match_id or "").strip()
+    deleted = delete_custom_match(match_id_text, source_match_url=LIVE_SELECTABLE_URL)
+    if deleted:
+        result = {
+            "deleted": True,
+            "match_id": match_id_text,
+            "issue": str(issue or "").strip(),
+            "status_message": f"已删除自选对赛 match_id {match_id_text}。",
+            "status_level": "success",
+        }
+    else:
+        result = {
+            "deleted": False,
+            "match_id": match_id_text,
+            "issue": str(issue or "").strip(),
+            "status_message": "未删除：只能删除从“选择对赛”添加的自选对赛。",
+            "status_level": "warning",
+        }
+    return result if return_details else deleted
 
 
 def _section_text(node) -> str:

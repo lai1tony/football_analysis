@@ -168,3 +168,10 @@ Write-Host ""
 Write-Host "Start menu and desktop shortcuts were created."
 Write-Host "The installer clears the review model API key. Configure it at:"
 Write-Host "  http://127.0.0.1:5050/config"
+
+Write-Host "For detailed usage instructions, open:"
+Write-Host "  README_USER_GUIDE.txt (in the installation folder)"
+
+Write-Host "Press any key to open the installation folder..."
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+Invoke-Item $AppDir

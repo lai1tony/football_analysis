@@ -13,6 +13,7 @@ from playwright_cli_client import fetch_html_via_playwright_cli
 SOURCE_URL = "https://trade.500.com/sfc/"
 ISSUE_SOURCE_URL_TEMPLATE = "https://trade.500.com/sfc/?expect={issue}"
 RESULT_SOURCE_URL_TEMPLATE = "https://trade.500.com/rj/?expect={issue}"
+LIVE_SELECTABLE_URL = "https://live.500.com/2h1.php"
 SFC_RESULTS_INDEX_URL = "https://kaijiang.500.com/sfc.shtml"
 RESULT_PAGE_BASE_URL = "https://odds.500.com/fenxi/"
 HEADERS = {
@@ -166,6 +167,102 @@ def fetch_issue_matches(issue: str) -> list[dict]:
     return parse_match_list_html(html, requested_issue=str(issue or "").strip(), source_url=url)
 
 
+def _normalize_live_match_time(value: str) -> str:
+    text = re.sub(r"\s+", " ", (value or "").replace("\xa0", " ")).strip()
+    if not text:
+        return ""
+    if re.search(r"\d{4}-\d{1,2}-\d{1,2}", text):
+        return text
+    if re.search(r"^\d{1,2}-\d{1,2}\b", text):
+        return f"{datetime.now().year}-{text}"
+    return text
+
+
+def _live_team_name(cell) -> str:
+    if cell is None:
+        return ""
+    links = cell.find_all("a")
+    if links:
+        return links[-1].get_text(strip=True)
+    text = cell.get_text(" ", strip=True)
+    return re.sub(r"\[[^\]]+\]", "", text).strip()
+
+
+def parse_live_selectable_matches_html(
+    html: str,
+    *,
+    issue: str = "",
+    source_url: str = LIVE_SELECTABLE_URL,
+) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    sync_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    issue_text = str(issue or "").strip()
+    matches: list[dict] = []
+    seen: set[str] = set()
+
+    for row in soup.find_all("tr"):
+        match_id = str(row.get("fid") or "").strip()
+        if not match_id:
+            checkbox = row.find("input", attrs={"name": re.compile(r"check_id")})
+            match_id = str(checkbox.get("value") or "").strip() if checkbox else ""
+        if not match_id or match_id in seen:
+            continue
+
+        shuju_link = row.find("a", href=re.compile(r"shuju-\d+\.shtml"))
+        shuju_href = str(shuju_link.get("href") or "") if shuju_link else ""
+        shuju_match = re.search(r"shuju-(\d+)\.shtml", shuju_href)
+        if shuju_match:
+            match_id = shuju_match.group(1)
+        if not shuju_match and not re.fullmatch(r"\d+", match_id):
+            continue
+
+        cells = row.find_all("td")
+        if len(cells) < 8:
+            continue
+        league = cells[1].get_text(" ", strip=True) if len(cells) > 1 else ""
+        match_time = _normalize_live_match_time(cells[3].get_text(" ", strip=True) if len(cells) > 3 else "")
+        home = _live_team_name(cells[5] if len(cells) > 5 else None)
+        away = _live_team_name(cells[7] if len(cells) > 7 else None)
+        if not home or not away:
+            continue
+
+        match_no = str(9000 + len(matches) + 1)
+        seen.add(match_id)
+        matches.append(
+            {
+                "match_id": match_id,
+                "issue": issue_text,
+                "league": league,
+                "match_no": match_no,
+                "match_time": match_time,
+                "home_team": home,
+                "away_team": away,
+                "source_match_url": source_url,
+                "shuju_url": f"https://odds.500.com/fenxi/shuju-{match_id}.shtml",
+                "ouzhi_url": f"https://odds.500.com/fenxi/ouzhi-{match_id}.shtml?ctype=2",
+                "touzhu_url": f"https://odds.500.com/fenxi/touzhu-{match_id}.shtml",
+                "yazhi_url": f"https://odds.500.com/fenxi/yazhi-{match_id}.shtml",
+                "list_odds_win": "",
+                "list_odds_draw": "",
+                "list_odds_loss": "",
+                "list_heat_win": "",
+                "list_heat_draw": "",
+                "list_heat_loss": "",
+                "sync_time": sync_time,
+            }
+        )
+    return matches
+
+
+def fetch_live_selectable_matches(issue: str = "") -> list[dict]:
+    html = fetch_html(LIVE_SELECTABLE_URL)
+    return parse_live_selectable_matches_html(
+        html,
+        issue=str(issue or "").strip(),
+        source_url=LIVE_SELECTABLE_URL,
+    )
+
+
 def parse_sfc_issue_sequence_html(html: str) -> list[str]:
     issues = {
         issue
@@ -231,6 +328,26 @@ def _fetch_result_from_shuju_url(url: str) -> tuple[str, str]:
         return "", ""
     html = fetch_html(url)
     return _parse_result_score_from_shuju_html(html)
+
+
+def fetch_result_from_match_url(url: str) -> dict:
+    url_text = str(url or "").strip()
+    if not url_text:
+        return {}
+    match_obj = re.search(r"shuju-(\d+)\.shtml", url_text)
+    actual_score, actual_result = _fetch_result_from_shuju_url(url_text)
+    if not actual_score or not actual_result:
+        return {}
+    return {
+        "match_id": match_obj.group(1) if match_obj else "",
+        "issue": "",
+        "home_team": "",
+        "away_team": "",
+        "actual_score": actual_score,
+        "actual_result": actual_result,
+        "result_status": "settled",
+        "result_source_url": url_text,
+    }
 
 
 def parse_issue_results_html(html: str, *, issue: str = "") -> list[dict]:

@@ -61,7 +61,7 @@ from learning_engine import (
     _review_signal_summary,
 )
 from outcome_policy import effective_market_probs, evaluate_outcome_policy
-from source_500_client import fetch_issue_results
+from source_500_client import fetch_issue_results, fetch_result_from_match_url
 
 
 ACTION_LEVELS = {"观望": 0, "轻仓": 1, "主推": 2}
@@ -276,21 +276,44 @@ def _handicap_bucket_key(handicap_risk: Mapping[str, Any], features: list[str]) 
     )
 
 
+def _handicap_bucket_side_for_table(handicap_risk: Mapping[str, Any], table: Mapping[str, Any]) -> str:
+    features = [str(item) for item in table.get("features", []) if str(item or "").strip()]
+    buckets = table.get("buckets", {})
+    if not features or not isinstance(buckets, Mapping):
+        return ""
+    bucket = buckets.get(_handicap_bucket_key(handicap_risk, features))
+    side = str(bucket.get("side", "") or "") if isinstance(bucket, Mapping) else ""
+    return side if side in {"home", "away"} else ""
+
+
+def _handicap_bucket_strategy_side(handicap_risk: Mapping[str, Any], strategy: Mapping[str, Any]) -> tuple[str, str]:
+    side = _handicap_bucket_side_for_table(handicap_risk, strategy)
+    if side:
+        return side, "主表"
+    fallback_tables = strategy.get("fallback_bucket_tables", ())
+    if not isinstance(fallback_tables, list):
+        return "", ""
+    for table in fallback_tables:
+        if not isinstance(table, Mapping):
+            continue
+        side = _handicap_bucket_side_for_table(handicap_risk, table)
+        if side:
+            return side, "补充表"
+    return "", ""
+
+
 def _apply_handicap_bucket_strategy(
     handicap_risk: Mapping[str, Any],
     strategy: Mapping[str, Any],
 ) -> dict[str, Any]:
     result = dict(handicap_risk)
-    features = [str(item) for item in strategy.get("features", []) if str(item or "").strip()]
-    buckets = strategy.get("buckets", {})
-    bucket = buckets.get(_handicap_bucket_key(result, features)) if isinstance(buckets, Mapping) else None
-    side = str(bucket.get("side", "") or "") if isinstance(bucket, Mapping) else ""
+    side, table_label = _handicap_bucket_strategy_side(result, strategy)
     if side in {"home", "away"}:
         result["recommendation"] = str(strategy.get("action", "轻仓") or "轻仓")
         result["recommended_side"] = side
         result["reason"] = (
             str(result.get("reason", "") or "")
-            + " 学习让球分桶策略命中：按历史闭环桶表执行让球方向。"
+            + f" 学习让球分桶策略命中：按历史闭环{table_label or '桶表'}执行让球方向。"
         ).strip()
     else:
         result["recommendation"] = "观望"
@@ -1037,7 +1060,7 @@ def _parse_expert_review_payload(raw_text: str, current_outcome: str) -> dict[st
     if target_outcome and target_outcome in OUTCOMES and target_outcome != current_outcome:
         direction_guarded = True
         target_action = "观望"
-        reason = "expert tried to change outcome; force watch: " + reason
+        reason = "专家终审尝试改方向，已强制观望：" + reason
 
     clean_flags = [str(item).strip() for item in risk_flags if str(item).strip()]
     return {
@@ -1191,7 +1214,7 @@ def _classify_review_failure(
         diagnostic = exc.diagnostic
         detail = _build_review_failure_detail(endpoint=endpoint, diagnostic=diagnostic, raw_text=raw_text)
         if "finish_reason=length" in diagnostic.lower():
-            return "review model output was truncated", detail
+            return "复核模型输出被截断", detail
         if exc.public_message:
             return str(exc.public_message), detail
 
@@ -1201,10 +1224,10 @@ def _classify_review_failure(
 
     if isinstance(exc, ValueError):
         if _looks_truncated_json(raw_text):
-            return "review model JSON was truncated", diagnostic
+            return "复核模型 JSON 被截断", diagnostic
         if "json" in lower_text:
-            return "review model returned non-JSON content", diagnostic
-        return "review model returned invalid JSON", diagnostic
+            return "复核模型返回非 JSON 内容", diagnostic
+        return "复核模型返回无效 JSON", diagnostic
     if "429" in text or "concurrency limit" in lower_text or "rate limit" in lower_text:
         return "review model rate limited", diagnostic
     if "timeout" in lower_text or "timed out" in lower_text:
@@ -3172,6 +3195,7 @@ def resolve_recommendation(
     final_risk["recommendation"] = final_action
     final_risk["confidence"] = adjusted_confidence
     final_risk["risk_level"] = action_risk_level(adjusted_confidence)
+    base_stake = safe_float(algo_risk.get("stake_pct"))
     final_stake = _stake_for_action(final_action, final_risk)
     if status == "completed" and final_action != "观望":
         if bool(final_risk.get("low_odds_favorite_guard")) and stake_multiplier <= 0:
@@ -3180,6 +3204,8 @@ def resolve_recommendation(
                 resolution_reason,
                 "LLM stake multiplier was zero, but low-odds favorite guard keeps algorithm stake.",
             )
+        if base_stake > 0:
+            final_stake = min(final_stake, base_stake)
         final_stake = round(final_stake * stake_multiplier, 2)
     final_risk["stake_pct"] = 0.0 if final_action == "观望" else final_stake
     # Preserve the pre-review (algo) action so the arbiter can decide whether
@@ -4760,6 +4786,25 @@ def _build_skip_entry(match_row: Mapping[str, Any], issue_text: str, reason: str
     }
 
 
+def _fallback_result_from_match_row(match_row: Mapping[str, Any]) -> dict[str, Any] | None:
+    shuju_url = str(_row_field(match_row, "shuju_url", "") or "").strip()
+    if not shuju_url:
+        return None
+    try:
+        result = fetch_result_from_match_url(shuju_url)
+    except Exception:  # noqa: BLE001
+        return None
+    if not result:
+        return None
+    actual_result = str(result.get("actual_result", "") or "").strip()
+    actual_score = str(result.get("actual_score", "") or "").strip()
+    if actual_result not in {"home", "draw", "away"} or not actual_score:
+        return None
+    payload = dict(result)
+    payload["match_id"] = str(_row_field(match_row, "match_id", "") or "")
+    return payload
+
+
 def _settle_match_row(
     match_row: Mapping[str, Any],
     *,
@@ -4831,26 +4876,28 @@ def _settle_match_row(
                 result_synced_count = 1
     else:
         if result_entry is None:
-            skip_entry = _build_skip_entry(match_row, issue_text, "未命中完场赛果")
-            _emit_progress(
-                progress_callback,
-                total_items=total_items,
-                completed_items=current_item_index,
-                current_item_index=current_item_index,
-                current_item_label=match_label,
-                current_step="当前场次跳过",
-                message=f"第 {current_item_index}/{total_items} 场跳过：{match_label}，未命中完场赛果",
-                level="warning",
-            )
-            return {
-                "issue": issue_text,
-                "match_id": match_id,
-                "match_label": match_label,
-                "result_synced_count": 0,
-                "settled_count": 0,
-                "skipped_count": 1,
-                "skipped_matches": [skip_entry],
-            }
+            result_entry = _fallback_result_from_match_row(match_row)
+            if result_entry is None:
+                skip_entry = _build_skip_entry(match_row, issue_text, "未命中完场赛果")
+                _emit_progress(
+                    progress_callback,
+                    total_items=total_items,
+                    completed_items=current_item_index,
+                    current_item_index=current_item_index,
+                    current_item_label=match_label,
+                    current_step="当前场次跳过",
+                    message=f"第 {current_item_index}/{total_items} 场跳过：{match_label}，未命中完场赛果",
+                    level="warning",
+                )
+                return {
+                    "issue": issue_text,
+                    "match_id": match_id,
+                    "match_label": match_label,
+                    "result_synced_count": 0,
+                    "settled_count": 0,
+                    "skipped_count": 1,
+                    "skipped_matches": [skip_entry],
+                }
 
         effective_result = {
             "actual_result": str(result_entry["actual_result"]).strip(),

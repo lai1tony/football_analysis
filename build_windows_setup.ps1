@@ -77,9 +77,14 @@ function New-LauncherFiles {
     @(
         "@echo off"
         "cd /d ""%~dp0"""
+        "echo Starting Football Analysis..."
         "start ""Football Analysis Server"" ""%~dp0FootballAnalysis.exe"""
         "timeout /t 3 /nobreak >nul"
         "start """" ""http://127.0.0.1:5050/"""
+        "echo."
+        "echo 首次使用请先配置 API 密钥: http://127.0.0.1:5050/config"
+        "echo 使用说明请见: README_USER_GUIDE.txt"
+        "pause"
     ) | Set-Content -LiteralPath $StartCmd -Encoding ASCII
 
     @(
@@ -87,15 +92,7 @@ function New-LauncherFiles {
         "start """" ""http://127.0.0.1:5050/config"""
     ) | Set-Content -LiteralPath $ConfigCmd -Encoding ASCII
 
-    @(
-        "Football Analysis"
-        ""
-        "Run: Start Football Analysis.cmd"
-        "URL: http://127.0.0.1:5050/"
-        "Config: http://127.0.0.1:5050/config"
-        ""
-        "The installer keeps summary-model config but clears the review model API key. On first run, open Config and fill the review model key again."
-    ) | Set-Content -LiteralPath $Readme -Encoding UTF8
+    Copy-Item -LiteralPath (Join-Path $Root "packaging\windows\README_USER_GUIDE.txt") -Destination $Readme -Force
 }
 
 function Invoke-IExpress {
@@ -173,6 +170,8 @@ $AddData = @(
     "data\static;static",
     "data\football_data.db;.",
     "data\football_data_live.db;.",
+    "data\README.md;.",
+    "SETUP_GUIDE.md;.",
     ".env.example;."
 )
 
@@ -187,6 +186,8 @@ $AddData = @(
     --add-data $AddData[2] `
     --add-data $AddData[3] `
     --add-data $AddData[4] `
+    --add-data $AddData[5] `
+    --add-data $AddData[6] `
     data\app.py
 Copy-Item -LiteralPath (Join-Path $Root ".env.example") -Destination (Join-Path $DistDir "FootballAnalysis\.env") -Force
 

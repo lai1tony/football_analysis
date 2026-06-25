@@ -278,6 +278,21 @@ a:hover {
   border-color: rgba(148, 163, 184, 0.32);
 }
 
+.btn-selectable {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff7cc;
+  border-color: #facc15;
+  color: #713f12;
+  text-align: center;
+}
+
+.btn-selectable:hover {
+  background: #fef3c7;
+  border-color: #eab308;
+}
+
 .panel {
   display: flex;
   flex: 1;
@@ -328,6 +343,72 @@ a:hover {
   padding: 0 18px 18px;
 }
 
+.selectable-panel {
+  flex: 0 0 auto;
+  max-height: 420px;
+}
+
+.selectable-form {
+  display: grid;
+  gap: 12px;
+  padding: 0 14px 14px;
+}
+
+.selectable-list {
+  display: grid;
+  max-height: 260px;
+  gap: 8px;
+  overflow: auto;
+}
+
+.selectable-match {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e2e8f0;
+  cursor: pointer;
+}
+
+.selectable-match.is-added {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.selectable-match input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+}
+
+.selectable-match strong,
+.selectable-match em {
+  display: block;
+}
+
+.selectable-match strong {
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.selectable-match em {
+  margin-top: 5px;
+  color: #94a3b8;
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.selectable-message {
+  padding: 0 18px 18px;
+  color: #cbd5e1;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .panel-title {
   display: flex;
   align-items: center;
@@ -348,6 +429,11 @@ a:hover {
   overflow: auto;
 }
 
+.match-card-shell {
+  position: relative;
+  border-radius: 18px;
+}
+
 .match-card {
   display: block;
   padding: 16px;
@@ -362,10 +448,27 @@ a:hover {
   border-color: rgba(148, 163, 184, 0.16);
 }
 
+.match-card-shell.custom-match .match-card {
+  background: #fff7cc;
+  border-color: #facc15;
+  color: #713f12;
+}
+
+.match-card-shell.custom-match .match-card:hover {
+  background: #fef3c7;
+  border-color: #eab308;
+}
+
 .match-card.active {
   background: linear-gradient(135deg, rgba(37, 99, 235, 0.24), rgba(124, 58, 237, 0.18));
   border-color: rgba(96, 165, 250, 0.44);
   box-shadow: 0 16px 32px rgba(15, 23, 42, 0.24);
+}
+
+.match-card-shell.custom-match .match-card.active {
+  background: #fde68a;
+  border-color: #ca8a04;
+  box-shadow: 0 16px 32px rgba(113, 63, 18, 0.22);
 }
 
 .match-top {
@@ -406,6 +509,16 @@ a:hover {
   color: #fde68a;
 }
 
+.match-card-shell.custom-match .badge-muted {
+  background: rgba(202, 138, 4, 0.12);
+  border-color: rgba(202, 138, 4, 0.24);
+  color: #854d0e;
+}
+
+.match-card-shell.custom-match .match-top {
+  color: #a16207;
+}
+
 .match-name {
   margin: 0 0 8px;
   color: #f8fafc;
@@ -414,10 +527,49 @@ a:hover {
   line-height: 1.35;
 }
 
+.match-card-shell.custom-match .match-name {
+  color: #713f12;
+}
+
 .match-meta {
   color: #94a3b8;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.match-card-shell.custom-match .match-meta {
+  color: #92400e;
+}
+
+.delete-custom-match-form {
+  margin: 8px 0 0;
+}
+
+.delete-custom-match {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid rgba(202, 138, 4, 0.32);
+  border-radius: 12px;
+  background: rgba(254, 243, 199, 0.94);
+  color: #7c2d12;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.delete-custom-match:hover {
+  background: #fde68a;
+}
+
+.delete-custom-match:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.match-empty {
+  padding: 14px;
+  color: #94a3b8;
+  font-size: 13px;
 }
 
 .content {

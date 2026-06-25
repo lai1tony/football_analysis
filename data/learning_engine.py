@@ -2038,11 +2038,33 @@ def _handicap_bucket_key(row: Mapping[str, Any], features: tuple[str, ...] | lis
     return _dumps_json([_handicap_bucket_feature(row, name) for name in features])
 
 
+def _handicap_bucket_side_for_table(row: Mapping[str, Any], table: Mapping[str, Any]) -> str:
+    features = [str(item) for item in table.get("features", []) if str(item or "").strip()]
+    buckets = table.get("buckets", {})
+    if not features or not isinstance(buckets, Mapping):
+        return ""
+    bucket = buckets.get(_handicap_bucket_key(row, features))
+    side = str(bucket.get("side", "") or "") if isinstance(bucket, Mapping) else ""
+    return side if side in {"home", "away"} else ""
+
+
+def _handicap_bucket_strategy_side(row: Mapping[str, Any], strategy: Mapping[str, Any]) -> str:
+    side = _handicap_bucket_side_for_table(row, strategy)
+    if side:
+        return side
+    fallback_tables = strategy.get("fallback_bucket_tables", ())
+    if not isinstance(fallback_tables, list):
+        return ""
+    for table in fallback_tables:
+        if not isinstance(table, Mapping):
+            continue
+        side = _handicap_bucket_side_for_table(row, table)
+        if side:
+            return side
+    return ""
+
+
 def _handicap_bucket_strategy_metrics(rows: list[Mapping[str, Any]], strategy: Mapping[str, Any]) -> dict[str, Any]:
-    features = [str(item) for item in strategy.get("features", []) if str(item or "").strip()]
-    buckets = strategy.get("buckets", {})
-    if not isinstance(buckets, Mapping):
-        buckets = {}
     sample_count = 0
     action_count = 0
     hits = 0
@@ -2052,8 +2074,7 @@ def _handicap_bucket_strategy_metrics(rows: list[Mapping[str, Any]], strategy: M
         if actual not in {"home", "away", "push"}:
             continue
         sample_count += 1
-        bucket = buckets.get(_handicap_bucket_key(row, features))
-        side = str(bucket.get("side", "") or "") if isinstance(bucket, Mapping) else ""
+        side = _handicap_bucket_strategy_side(row, strategy)
         action = str(strategy.get("action", "轻仓") or "轻仓") if side in {"home", "away"} else "观望"
         key = f"{action}:{side or '-'}"
         summary = bucket_summary.setdefault(

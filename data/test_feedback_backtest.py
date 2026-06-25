@@ -501,8 +501,126 @@ class ResultParsingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "不一致"):
                 source_500_client.fetch_issue_matches("26069")
 
+    def test_parse_live_selectable_matches_builds_collection_urls(self) -> None:
+        html = """
+        <table>
+          <tr fid="1407734">
+            <td><input type="checkbox" name="check_id[]" value="1407734"></td>
+            <td class="ssbox_01"><a>中女超</a></td>
+            <td>第7轮</td>
+            <td>06-24&nbsp;17:00</td>
+            <td>&nbsp;</td>
+            <td><span class="gray">[07]</span><a>长春女足</a></td>
+            <td><div class="pk"><a>1</a><a>半球</a><a>1</a></div></td>
+            <td><a>山东女足</a><span class="gray">[11]</span></td>
+            <td>1 - 1</td>
+            <td></td>
+            <td></td>
+            <td></td>
+            <td></td>
+            <td><a href="//odds.500.com/fenxi/shuju-1407734.shtml">析</a></td>
+          </tr>
+        </table>
+        """
+
+        rows = source_500_client.parse_live_selectable_matches_html(html, issue="26099")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["match_id"], "1407734")
+        self.assertEqual(rows[0]["issue"], "26099")
+        self.assertEqual(rows[0]["league"], "中女超")
+        self.assertEqual(rows[0]["home_team"], "长春女足")
+        self.assertEqual(rows[0]["away_team"], "山东女足")
+        self.assertEqual(rows[0]["match_no"], "9001")
+        self.assertTrue(rows[0]["match_time"].endswith("06-24 17:00"))
+        self.assertEqual(rows[0]["shuju_url"], "https://odds.500.com/fenxi/shuju-1407734.shtml")
+        self.assertEqual(rows[0]["ouzhi_url"], "https://odds.500.com/fenxi/ouzhi-1407734.shtml?ctype=2")
+
 
 class FeedbackBacktestTests(TemporaryDatabaseTestCase):
+    def test_add_selectable_matches_upserts_selected_candidates(self) -> None:
+        candidates = [
+            {
+                "match_id": "1407734",
+                "issue": "26099",
+                "league": "中女超",
+                "match_no": "9001",
+                "match_time": "2026-06-24 17:00",
+                "home_team": "长春女足",
+                "away_team": "山东女足",
+                "source_match_url": "https://live.500.com/2h1.php",
+                "shuju_url": "https://odds.500.com/fenxi/shuju-1407734.shtml",
+                "ouzhi_url": "https://odds.500.com/fenxi/ouzhi-1407734.shtml?ctype=2",
+                "touzhu_url": "https://odds.500.com/fenxi/touzhu-1407734.shtml",
+                "yazhi_url": "https://odds.500.com/fenxi/yazhi-1407734.shtml",
+                "list_odds_win": "",
+                "list_odds_draw": "",
+                "list_odds_loss": "",
+                "list_heat_win": "",
+                "list_heat_draw": "",
+                "list_heat_loss": "",
+                "sync_time": "2026-06-24 17:10:00",
+            }
+        ]
+
+        with patch("collection_service.fetch_live_selectable_matches", return_value=candidates):
+            result = collection_service.add_selectable_matches(
+                ["1407734"],
+                issue="26099",
+                return_details=True,
+            )
+
+        row = collection_repository.get_match("1407734")
+        self.assertEqual(result["status_level"], "success")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["issue"], "26099")
+        self.assertEqual(row["home_team"], "长春女足")
+        self.assertTrue(row["yazhi_url"].endswith("yazhi-1407734.shtml"))
+
+    def test_remove_selectable_match_deletes_only_live_selected_match(self) -> None:
+        collection_repository.upsert_matches(
+            [
+                {
+                    "match_id": "1407734",
+                    "issue": "26099",
+                    "league": "中女超",
+                    "match_no": "9001",
+                    "match_time": "2026-06-24 17:00",
+                    "home_team": "长春女足",
+                    "away_team": "山东女足",
+                    "source_match_url": "https://live.500.com/2h1.php",
+                    "shuju_url": "https://odds.500.com/fenxi/shuju-1407734.shtml",
+                    "ouzhi_url": "https://odds.500.com/fenxi/ouzhi-1407734.shtml?ctype=2",
+                    "touzhu_url": "https://odds.500.com/fenxi/touzhu-1407734.shtml",
+                    "yazhi_url": "https://odds.500.com/fenxi/yazhi-1407734.shtml",
+                    "list_odds_win": "",
+                    "list_odds_draw": "",
+                    "list_odds_loss": "",
+                    "list_heat_win": "",
+                    "list_heat_draw": "",
+                    "list_heat_loss": "",
+                    "sync_time": "2026-06-24 17:10:00",
+                }
+            ]
+        )
+        self.insert_match("regular1", issue="26099", match_no="1")
+
+        blocked = collection_service.remove_selectable_match(
+            "regular1",
+            issue="26099",
+            return_details=True,
+        )
+        deleted = collection_service.remove_selectable_match(
+            "1407734",
+            issue="26099",
+            return_details=True,
+        )
+
+        self.assertFalse(blocked["deleted"])
+        self.assertTrue(deleted["deleted"])
+        self.assertIsNotNone(collection_repository.get_match("regular1"))
+        self.assertIsNone(collection_repository.get_match("1407734"))
+
     def test_save_prediction_run_replaces_existing_match_prediction(self) -> None:
         issue = "26088"
         self.insert_match("M1", issue=issue)
@@ -1378,6 +1496,37 @@ class FeedbackBacktestTests(TemporaryDatabaseTestCase):
         self.assertEqual(top_picks["TOP1"]["top_pick_result_status"], "hit")
         self.assertEqual(top_picks["TOP2"]["top_pick_result_status"], "miss")
 
+    def test_settle_issue_results_falls_back_to_match_detail_result(self) -> None:
+        issue = "20260429"
+        self.insert_match("1407734", issue=issue, home_team="长春女足", away_team="山东女足")
+        with closing(collection_repository.get_connection()) as conn:
+            conn.execute(
+                "UPDATE matches SET shuju_url = ? WHERE match_id = ?",
+                ("https://odds.500.com/fenxi/shuju-1407734.shtml", "1407734"),
+            )
+            conn.commit()
+        run_id = self.insert_run("1407734", issue=issue, created_at="2026-04-29 18:00:00")
+
+        with patch("prediction_engine.fetch_issue_results", return_value=[]), patch(
+            "prediction_engine.fetch_result_from_match_url",
+            return_value={
+                "match_id": "1407734",
+                "actual_result": "home",
+                "actual_score": "2-1",
+                "result_status": "settled",
+                "result_source_url": "https://odds.500.com/fenxi/shuju-1407734.shtml",
+            },
+        ):
+            result = prediction_engine.settle_issue_results(issue)
+
+        match_row = collection_repository.get_match_analysis("1407734")
+        feedback_row = collection_repository.get_feedback_log(run_id)
+        self.assertEqual(result["settled_count"], 1)
+        self.assertEqual(result["skipped_count"], 0)
+        self.assertEqual(str(match_row["actual_score"]), "2-1")
+        self.assertEqual(str(match_row["result_source_url"]), "https://odds.500.com/fenxi/shuju-1407734.shtml")
+        self.assertIsNotNone(feedback_row)
+
     def test_settle_is_idempotent_and_preserves_manual_roi_override(self) -> None:
         self.insert_match("M3", issue="20260429")
         run_id = self.insert_run("M3", issue="20260429", created_at="2026-04-29 18:00:00")
@@ -1950,6 +2099,49 @@ class FeedbackBacktestTests(TemporaryDatabaseTestCase):
         self.assertEqual(empty_summary["miss_predictions"], 0)
         self.assertEqual(empty_summary["hit_rate"], 0.0)
 
+    def test_feedback_summary_counts_only_actionable_handicap_recommendations(self) -> None:
+        issue = "20260429"
+        self.insert_match("M44", issue=issue, match_no="1")
+        self.insert_match("M45", issue=issue, match_no="2")
+        self.insert_match("M46", issue=issue, match_no="3")
+
+        action_run = self.insert_run(
+            "M44",
+            issue=issue,
+            created_at="2026-04-29 18:00:00",
+            handicap_recommendation="轻仓",
+            handicap_recommended_side="home",
+            handicap_line=-1.0,
+        )
+        watch_run = self.insert_run(
+            "M45",
+            issue=issue,
+            created_at="2026-04-29 18:05:00",
+            handicap_recommendation="观望",
+            handicap_recommended_side="",
+            handicap_line=-1.0,
+        )
+        no_side_run = self.insert_run(
+            "M46",
+            issue=issue,
+            created_at="2026-04-29 18:10:00",
+            handicap_recommendation="轻仓",
+            handicap_recommended_side="",
+            handicap_line=-1.0,
+        )
+
+        prediction_engine.record_feedback(action_run, "M44", "home", actual_score="2-0", result_status="settled")
+        prediction_engine.record_feedback(watch_run, "M45", "home", actual_score="3-0", result_status="settled")
+        prediction_engine.record_feedback(no_side_run, "M46", "away", actual_score="0-2", result_status="settled")
+
+        summary = collection_repository.get_feedback_summary(issue)
+
+        self.assertEqual(summary["total_predictions"], 3)
+        self.assertEqual(summary["handicap_total_predictions"], 1)
+        self.assertEqual(summary["handicap_hit_predictions"], 1)
+        self.assertEqual(summary["handicap_miss_predictions"], 0)
+        self.assertAlmostEqual(summary["handicap_hit_rate"], 1.0, places=4)
+
     def test_manual_review_resolution_updates_effective_action_and_backtest_uses_it(self) -> None:
         self.insert_match("M6", issue="20260429", match_no="1", match_time="2099-04-30 20:00:00")
         run_id = self.insert_run(
@@ -2060,6 +2252,63 @@ class ManualReviewWebTests(TemporaryDatabaseTestCase):
 
 
 class WebSettlementTests(unittest.TestCase):
+    def test_delete_selectable_match_route_deletes_custom_match(self) -> None:
+        client = web_app_module.app.test_client()
+        with (
+            patch.object(web_app_module, "_ensure_db_initialized"),
+            patch.object(
+                web_app_module,
+                "remove_selectable_match",
+                return_value={
+                    "deleted": True,
+                    "issue": "26099",
+                    "match_id": "1407734",
+                    "status_message": "已删除自选对赛 match_id 1407734。",
+                    "status_level": "success",
+                },
+            ) as mock_remove,
+        ):
+            response = client.post(
+                "/select-matches/1407734/delete",
+                data={"issue": "26099", "current_match_id": "1407734"},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("issue=26099", response.headers["Location"])
+        self.assertIn("level=success", response.headers["Location"])
+        self.assertNotIn("match_id=1407734", response.headers["Location"])
+        mock_remove.assert_called_once_with("1407734", issue="26099", return_details=True)
+
+    def test_select_matches_route_adds_checked_matches_and_redirects_to_issue(self) -> None:
+        client = web_app_module.app.test_client()
+        with (
+            patch.object(web_app_module, "_ensure_db_initialized"),
+            patch.object(
+                web_app_module,
+                "add_selectable_matches",
+                return_value={
+                    "issue": "26099",
+                    "matches": [{"match_id": "1407734"}],
+                    "status_message": "已添加自选对赛 1 场到期号 26099。",
+                    "status_level": "success",
+                },
+            ) as mock_add,
+        ):
+            response = client.post(
+                "/select-matches",
+                data={
+                    "issue": "26099",
+                    "match_id": "existing",
+                    "selected_match_ids": ["1407734"],
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("issue=26099", response.headers["Location"])
+        self.assertIn("match_id=1407734", response.headers["Location"])
+        self.assertIn("level=success", response.headers["Location"])
+        mock_add.assert_called_once_with(["1407734"], issue="26099", return_details=True)
+
     def test_sync_issue_route_redirects_to_backfilled_issue(self) -> None:
         client = web_app_module.app.test_client()
         with (

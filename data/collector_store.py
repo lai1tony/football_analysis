@@ -36,6 +36,7 @@ from collection_repository import (  # noqa: F401
 from collection_service import (  # noqa: F401
     FIELD_GROUPS,
     FIELD_LABELS,
+    add_selectable_matches,
     build_sections,
     collect_all_matches,
     collect_match,
@@ -43,6 +44,8 @@ from collection_service import (  # noqa: F401
     get_collection_failure_reason,
     get_missing_required_dimensions,
     normalize_text,
+    list_selectable_matches,
+    remove_selectable_match,
     summarize_issue_entries,
     sync_issue_matches,
     sync_matches,
