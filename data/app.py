@@ -4,6 +4,7 @@ from threading import Thread
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 
+from action_policy import stake_for_action
 from collection_repository import (
     DatabaseWriteUnavailableError,
     compute_issue_top_picks,
@@ -153,6 +154,17 @@ def _run_action(action, *, match_id: str = "", issue: str = ""):
     return _index_redirect(match_id=match_id, issue=issue)
 
 
+def _selected_match_ids_from_form() -> list[str]:
+    selected_match_ids: list[str] = []
+    seen: set[str] = set()
+    for raw_match_id in request.form.getlist("selected_match_ids"):
+        match_id = str(raw_match_id or "").strip()
+        if match_id and match_id not in seen:
+            selected_match_ids.append(match_id)
+            seen.add(match_id)
+    return selected_match_ids
+
+
 def _decorate_collection_row(row):
     if row is None:
         return None
@@ -275,6 +287,28 @@ def _handicap_pick_label(action: str, side: str) -> str:
     return f"{action_text}{side_text}"
 
 
+def _handicap_suggested_stake_pct(data) -> float:
+    action = str(data.get("handicap_recommendation", "") or "").strip()
+    side = str(data.get("handicap_recommended_side", "") or "").strip()
+    if action == "观望" or side not in {"home", "away"}:
+        return 0.0
+
+    raw_odds = _safe_float(data.get(f"handicap_{side}_odds"))
+    decimal_odds = raw_odds + 1.0 if raw_odds > 0 and raw_odds < 1.5 else raw_odds
+    cover_prob = _safe_float(data.get(f"handicap_{side}_cover_prob"))
+    risk = {
+        "recommended_outcome": side,
+        "probabilities": {side: cover_prob},
+        "market_odds": {side: decimal_odds},
+        "expected_values": {side: _safe_float(data.get("handicap_expected_value"))},
+        "confidence": _safe_float(data.get("handicap_confidence")),
+        "quality_score": _safe_float(data.get("quality_score"), 0.70),
+        "model_agreement": 0.70,
+        "action_score": 0.82 if action == "主推" else 0.64,
+    }
+    return stake_for_action(action, risk)
+
+
 def _decorate_prediction_run(row):
     if row is None:
         return None
@@ -330,6 +364,7 @@ def _decorate_prediction_run(row):
         data.get("handicap_recommendation"),
         data.get("handicap_recommended_side"),
     )
+    data["handicap_suggested_stake_pct"] = _handicap_suggested_stake_pct(data)
     handicap_reason = str(data.get("handicap_reason", "") or "")
     if handicap_reason:
         raw_current = f"当前盘口 {_safe_float(data.get('handicap_line')):+.3f}"
@@ -764,21 +799,27 @@ def collect_all():
     _ensure_db_initialized()
     issue = request.form.get("issue", "")
     match_id = request.form.get("match_id", "")
+    selected_match_ids = _selected_match_ids_from_form()
     if _wants_async_json():
         payload = _start_background_task(
             kind="collect-all",
-            title="采集全部对赛",
+            title="采集勾选对赛" if selected_match_ids else "采集全部对赛",
             match_id=match_id,
             issue=issue,
             action=lambda task_id: collect_all_matches(
                 issue or None,
                 progress_callback=_task_progress_callback(task_id),
                 return_details=True,
+                match_ids=selected_match_ids or None,
             ),
         )
         return jsonify(payload)
     return _run_action(
-        lambda: collect_all_matches(issue or None, return_details=True),
+        lambda: collect_all_matches(
+            issue or None,
+            return_details=True,
+            match_ids=selected_match_ids or None,
+        ),
         match_id=match_id,
         issue=issue,
     )
@@ -812,11 +853,17 @@ def predict_single(match_id: str):
     )
 
 
-def _predict_issue_and_refresh_top_picks(issue: str | None, *, progress_callback=None):
+def _predict_issue_and_refresh_top_picks(
+    issue: str | None,
+    *,
+    progress_callback=None,
+    match_ids: list[str] | None = None,
+):
     result = predict_issue(
         issue or None,
         ensure_collected=False,
         progress_callback=progress_callback,
+        match_ids=match_ids,
     )
     try:
         effective_issue = str(issue or "").strip() or (list_issues()[0] if list_issues() else "")
@@ -832,20 +879,25 @@ def predict_all():
     _ensure_db_initialized()
     issue = request.form.get("issue", "")
     match_id = request.form.get("match_id", "")
+    selected_match_ids = _selected_match_ids_from_form()
     if _wants_async_json():
         payload = _start_background_task(
             kind="predict-all",
-            title="预测当前期全部对赛",
+            title="预测勾选对赛" if selected_match_ids else "预测当前期全部对赛",
             match_id=match_id,
             issue=issue,
             action=lambda task_id: _predict_issue_and_refresh_top_picks(
                 issue,
                 progress_callback=_task_progress_callback(task_id),
+                match_ids=selected_match_ids or None,
             ),
         )
         return jsonify(payload)
     return _run_action(
-        lambda: _predict_issue_and_refresh_top_picks(issue),
+        lambda: _predict_issue_and_refresh_top_picks(
+            issue,
+            match_ids=selected_match_ids or None,
+        ),
         match_id=match_id,
         issue=issue,
     )
@@ -856,20 +908,25 @@ def settle_all():
     _ensure_db_initialized()
     issue = request.form.get("issue", "")
     match_id = request.form.get("match_id", "")
+    selected_match_ids = _selected_match_ids_from_form()
     if _wants_async_json():
         payload = _start_background_task(
             kind="settle-all",
-            title="同步赛果并结算当前期",
+            title="同步并结算勾选对赛" if selected_match_ids else "同步赛果并结算当前期",
             match_id=match_id,
             issue=issue,
             action=lambda task_id: settle_issue_results(
                 issue or None,
                 progress_callback=_task_progress_callback(task_id),
+                match_ids=selected_match_ids or None,
             ),
         )
         return jsonify(payload)
     return _run_action(
-        lambda: settle_issue_results(issue or None),
+        lambda: settle_issue_results(
+            issue or None,
+            match_ids=selected_match_ids or None,
+        ),
         match_id=match_id,
         issue=issue,
     )

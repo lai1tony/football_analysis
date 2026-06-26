@@ -1789,8 +1789,12 @@ def collect_all_matches(
     issue: str | None = None,
     progress_callback=None,
     return_details: bool = False,
+    match_ids: list[str] | None = None,
 ) -> list[dict] | dict[str, Any]:
     match_rows = list_matches_by_issue(issue)
+    selected_match_ids = {str(match_id).strip() for match_id in (match_ids or []) if str(match_id).strip()}
+    if selected_match_ids:
+        match_rows = [row for row in match_rows if str(row["match_id"]).strip() in selected_match_ids]
     results = []
     failed_matches: list[dict[str, Any]] = []
     total_matches = len(match_rows)

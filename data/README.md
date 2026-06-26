@@ -72,6 +72,10 @@
 
 策略计算读取原始 `algo_recommendation`、`algo_recommended_outcome`、`algo_suggested_stake_pct` 作为单场模型底稿，不读取自己上次写回的最终动作，避免重复应用时自我反馈。已有 `feedback_logs` 的 run 会被 `apply_target_batch_strategy_to_issue()` 跳过；比赛开赛后再生成的新预测由 `save_prediction_run()` 追加保存，不替换赛前 canonical run，也不搬运旧反馈。页面和 TOP3 优先使用 `effective_recommendation`，为空时才回退到原始 `recommendation`。TOP3 会优先选 `主推/轻仓`，可执行不足 3 场时才用 `观望` 补齐。
 
+Web 批量采集、预测和赛果结算表单支持 `selected_match_ids`。有勾选时，`collect_all_matches()`、`predict_issue()`、`settle_issue_results()` 和目标批量策略只处理这些 match_id；未勾选时才按当前期全量处理。维护这条链路时要避免选中预测改写未勾选比赛的 latest run。
+
+`suggested_stake_pct` 是胜平负主推荐链路的最终仓位字段，会被 `coverage_draw_rescue` 写回。让球盘目前没有单独持久化仓位列；Flask 页面在 `_decorate_prediction_run()` 中基于让球推荐侧、覆盖率、赔率、EV、信心和 `action_policy.stake_for_action()` 临时派生 `handicap_suggested_stake_pct` 供展示。两者都是分数 Kelly 口径，不是 full Kelly。
+
 当前期赛果同步结算完成后，`settle_issue_results()` 会重算当期 TOP3。首页 TOP3 卡片会对已结算场次显示命中/错误、实际赛果和比分；顶部命中率只使用已结算 TOP3 作为分母，待结算场次不参与统计。
 
 ## 学习闭环现状

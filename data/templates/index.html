@@ -113,7 +113,7 @@
         </div>
       </form>
 
-      <form method="post" action="{{ url_for('collect_all') }}" class="stack-form" data-busy-form data-progress-form="collect">
+      <form method="post" action="{{ url_for('collect_all') }}" class="stack-form" data-busy-form data-progress-form="collect" data-match-selection-form>
         <input type="hidden" name="match_id" value="{{ selected_match_id }}">
         <input type="hidden" name="issue" value="{{ selected_issue }}">
         <button
@@ -125,7 +125,7 @@
         >采集全部对赛</button>
       </form>
 
-      <form method="post" action="{{ url_for('predict_all') }}" class="stack-form" data-busy-form data-progress-form="predict">
+      <form method="post" action="{{ url_for('predict_all') }}" class="stack-form" data-busy-form data-progress-form="predict" data-match-selection-form>
         <input type="hidden" name="match_id" value="{{ selected_match_id }}">
         <input type="hidden" name="issue" value="{{ selected_issue }}">
         <button
@@ -137,7 +137,7 @@
         >预测当前期全部对赛</button>
       </form>
 
-      <form method="post" action="{{ url_for('settle_all') }}" class="stack-form" data-busy-form data-progress-form="settle">
+      <form method="post" action="{{ url_for('settle_all') }}" class="stack-form" data-busy-form data-progress-form="settle" data-match-selection-form>
         <input type="hidden" name="match_id" value="{{ selected_match_id }}">
         <input type="hidden" name="issue" value="{{ selected_issue }}">
         <button
@@ -219,6 +219,14 @@
         <div class="match-list">
           {% for match in matches %}
           <div class="match-card-shell {% if match['is_selectable_match'] %}custom-match{% endif %}">
+            <label class="match-select-control" title="选择对赛">
+              <input
+                type="checkbox"
+                class="match-select-checkbox"
+                value="{{ match['match_id'] }}"
+                aria-label="选择 {{ match['home_team'] }} vs {{ match['away_team'] }}"
+              >
+            </label>
             <a class="match-card {% if selected_match_id == match['match_id'] %}active{% endif %}" href="{{ url_for('index', match_id=match['match_id'], issue=selected_issue) }}">
               <div class="match-top">
                 <span>{{ match['match_no'] }}. {{ match['league'] }}</span>
@@ -367,38 +375,49 @@
               {% if selected_issue %}当前期号 {{ selected_issue }}{% else %}全部历史{% endif %}
             </div>
           </div>
-          <div class="prediction-result-rate">
-            {{ '%.1f'|format(prediction_result_summary['hit_rate'] * 100) }}%
+          <div class="prediction-result-rates">
+            <div class="prediction-result-rate prediction-result-rate-main">
+              <span>胜平负命中率</span>
+              <strong>{{ '%.1f'|format(prediction_result_summary['hit_rate'] * 100) }}%</strong>
+            </div>
+            <div class="prediction-result-rate prediction-result-rate-handicap">
+              <span>让球盘命中率</span>
+              <strong>{{ '%.1f'|format(prediction_result_summary.get('handicap_hit_rate', 0) * 100) }}%</strong>
+            </div>
           </div>
         </div>
         <div class="prediction-result-grid">
           <div class="prediction-result-stat">
-            <span>已结算场次</span>
+            <span>胜平负已结算</span>
             <strong>{{ prediction_result_summary['total_predictions'] }}</strong>
           </div>
           <div class="prediction-result-stat prediction-result-stat-hit">
-            <span>预测正确</span>
+            <span>胜平负正确</span>
             <strong>{{ prediction_result_summary['hit_predictions'] }}</strong>
           </div>
           <div class="prediction-result-stat prediction-result-stat-miss">
-            <span>预测错误</span>
+            <span>胜平负错误</span>
             <strong>{{ prediction_result_summary['miss_predictions'] }}</strong>
           </div>
           <div class="prediction-result-stat">
-            <span>让球已结算</span>
+            <span>胜平负 ROI</span>
+            <strong>{{ '%.3f'|format(prediction_result_summary['total_roi']) }}</strong>
+          </div>
+          <div class="prediction-result-stat">
+            <span>让球盘已结算</span>
             <strong>{{ prediction_result_summary.get('handicap_total_predictions', 0) }}</strong>
           </div>
           <div class="prediction-result-stat prediction-result-stat-hit">
-            <span>让球命中率</span>
-            <strong>{{ '%.1f'|format(prediction_result_summary.get('handicap_hit_rate', 0) * 100) }}%</strong>
+            <span>让球盘正确</span>
+            <strong>{{ prediction_result_summary.get('handicap_hit_predictions', 0) }}</strong>
+          </div>
+          <div class="prediction-result-stat prediction-result-stat-miss">
+            <span>让球盘错误</span>
+            <strong>{{ prediction_result_summary.get('handicap_miss_predictions', 0) }}</strong>
           </div>
           <div class="prediction-result-stat">
             <span>让球 ROI</span>
             <strong>{{ '%.3f'|format(prediction_result_summary.get('handicap_total_roi', 0)) }}</strong>
-          </div>
-          <div class="prediction-result-stat prediction-result-stat-rate">
-            <span>成功率</span>
-            <strong>{{ '%.1f'|format(prediction_result_summary['hit_rate'] * 100) }}%</strong>
           </div>
         </div>
       </section>
@@ -1007,6 +1026,7 @@
               <div class="prediction-outcome">{{ latest_prediction['handicap_line_label'] }}</div>
               <div class="prediction-sub">源均值 {{ '%+.3f'|format(latest_prediction['handicap_line'] or 0) }} · 覆盖率 主 {{ '%.1f'|format((latest_prediction['handicap_home_cover_prob'] or 0) * 100) }}% / 客 {{ '%.1f'|format((latest_prediction['handicap_away_cover_prob'] or 0) * 100) }}%</div>
               <div class="prediction-sub">EV {{ '%+.1f'|format((latest_prediction['handicap_expected_value'] or 0) * 100) }}% · 信心 {{ '%.1f'|format((latest_prediction['handicap_confidence'] or 0) * 10) }}/10</div>
+              <div class="prediction-sub">建议仓位 {{ '%.2f'|format(latest_prediction['handicap_suggested_stake_pct'] or 0) }}% · 分数Kelly</div>
             </div>
             <div class="prediction-metric-card">
               <div class="prediction-label">综合置信度</div>
@@ -1014,9 +1034,9 @@
               <div class="prediction-sub">风险等级 {{ latest_prediction['risk_level'] }}</div>
             </div>
             <div class="prediction-metric-card">
-              <div class="prediction-label">建议仓位</div>
+              <div class="prediction-label">胜平负建议仓位</div>
               <div class="prediction-main">{{ '%.2f'|format(latest_prediction['suggested_stake_pct']) }}%</div>
-              <div class="prediction-sub">基于 EV 与质量评估</div>
+              <div class="prediction-sub">分数Kelly · 基于 EV 与质量评估</div>
             </div>
             <div class="prediction-metric-card prediction-score-card">
               <div class="prediction-label">预测比分</div>
@@ -1320,6 +1340,22 @@
         return '采集';
       }
 
+      function getSelectedMatchIds() {
+        var selected = [];
+        document.querySelectorAll('.match-select-checkbox:checked').forEach(function (checkbox) {
+          if (checkbox.value) {
+            selected.push(checkbox.value);
+          }
+        });
+        return selected;
+      }
+
+      function appendSelectedMatchIds(formData) {
+        getSelectedMatchIds().forEach(function (matchId) {
+          formData.append('selected_match_ids', matchId);
+        });
+      }
+
       function buildResultUrl(task) {
         var target = new URL(activeCompleteUrl, window.location.origin);
         var message = String(task.message || '').trim();
@@ -1463,9 +1499,14 @@
           progressCount.textContent = '0 / 0';
           progressFill.style.width = '0%';
 
+          var formData = new FormData(form);
+          if (form.hasAttribute('data-match-selection-form')) {
+            appendSelectedMatchIds(formData);
+          }
+
           fetch(form.action, {
             method: 'POST',
-            body: new FormData(form),
+            body: formData,
             headers: {
               'X-Requested-With': 'XMLHttpRequest',
               'Accept': 'application/json'
