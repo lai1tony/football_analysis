@@ -139,9 +139,9 @@ python data/backfill_collection_quality.py --force
 - 让球盘命中率 `>= 70%`
 - 让球盘执行占比 `>= 60%`
 
-当前 active learning profile 为 #43，策略类型 `handicap_bucket_table`，只用于让球盘推荐。它在生成 `handicap_risk` 后按当前桶表策略决定让球侧和是否执行，未命中桶表时降为让球观望。胜平负最终动作仍由 `coverage_draw_rescue` 目标批量生产层落库。
+当前 active learning profile 为 #45，策略类型 `handicap_bucket_table`，只用于让球盘推荐。它在生成 `handicap_risk` 后按当前桶表策略决定让球侧和是否执行，未命中桶表时降为让球观望。胜平负最终动作仍由 `coverage_draw_rescue` 目标批量生产层落库。
 
-截至 2026-06-20，本地 SQLite 的 #43 当前策略全量历史回放为 1245 条真实已结算样本、751 个动作、执行占比 60.32%、执行命中率 72.17%。首页“历史反馈”统计的是 `feedback_logs` 已保存 prediction runs 的累计真实反馈，可能混合旧 profile；“当前策略回放”才是 active profile #43 的即时回放口径。
+截至 2026-06-26，本地 SQLite 的 #45 当前策略全量历史回放为 1232 条真实已结算样本、964 个动作、执行占比 78.25%、执行命中率 74.27%。首页“历史反馈”统计的是 `feedback_logs` 已保存 prediction runs 的累计真实反馈，可能混合旧 profile；“当前策略回放”才是 active profile #45 的即时回放口径。
 
 ## TOP3 重建
 
