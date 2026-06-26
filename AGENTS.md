@@ -31,9 +31,11 @@
 - Failed collections are persisted into `analyses.remarks` with the prefix `采集失败：`; collection stats rely on that exact prefix.
 - `coverage_draw_rescue` is the current target batch production strategy. `predict_match()` applies it to unsettled latest runs from the same issue after a single run is saved, and `predict_issue()` applies it again after the full issue is predicted. It writes final `recommendation`, `recommended_outcome`, `suggested_stake_pct`, and `effective_*` fields with `effective_action_source='target_batch_strategy'`.
 - Target batch strategy calculations must read the original single-match model baseline from `algo_recommendation`, `algo_recommended_outcome`, and `algo_suggested_stake_pct` when the current run was already written by `target_batch_strategy`; otherwise repeated application will feed on its own prior output.
+- Web batch collect/predict/settle actions accept `selected_match_ids`; when present, all downstream work including `apply_target_batch_strategy_to_issue()` must stay scoped to those matches and must not rewrite unselected latest runs.
 - Post-kickoff predictions must not replace the pre-match canonical baseline. `save_prediction_run()` preserves existing runs when the new run is created after `matches.match_time`, and `apply_target_batch_strategy_to_issue()` skips runs that already have `feedback_logs`. Existing local rows generated before this guard may still reflect older behavior unless restored from backup.
 - Historical learning replay backfill lives in `data/replay_backfill.py` and the UI route `POST /learning/replay-backfill`. It derives earlier missing issues, syncs matches, collects each match in a child process with timeout, predicts, settles, and marks feedback with `roi_source='replay_backfill'`; reruns resume already collected rows, and partial issues are not valid complete learning-loop samples.
 - As of the 2026-06-20 local SQLite snapshot, learning profile #43 is active. It is a `handicap_bucket_table` target strategy for Asian handicap recommendations, trained/evaluated on real settled historical rows with target hit rate >= 70% and action share >= 60%. The full-history current-strategy replay has 1245 samples, 751 actions, 60.32% action share, and 72.17% hit rate. The homepage "historical feedback" figures are saved prediction feedback from mixed older profiles and must not be read as the active strategy replay.
+- `prediction_runs.suggested_stake_pct` is the persisted stake for the win/draw/loss main recommendation. The UI-only `handicap_suggested_stake_pct` is derived in `app._decorate_prediction_run()` from handicap side, odds, cover probability, EV, confidence, and `action_policy.stake_for_action()`; there is no separate handicap stake column yet.
 
 ## Data / Output Gotchas
 - `export_review_workbook.py` is not driven by SQLite. It reads the CSV file `D:\football_analysis\data\football_match_collection.csv` and writes `D:\football_analysis\data\football_match_collection_review.xlsx`.
@@ -48,7 +50,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **football_analysis** (4652 symbols, 6527 relationships, 212 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **football_analysis** (4675 symbols, 6551 relationships, 212 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

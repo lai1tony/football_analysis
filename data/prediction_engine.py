@@ -4049,9 +4049,13 @@ def predict_issue(
     ensure_collected: bool = False,
     progress_callback=None,
     use_llm: bool = True,
+    match_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     init_db()
     rows = list_matches_by_issue(issue)
+    selected_match_ids = {str(match_id).strip() for match_id in (match_ids or []) if str(match_id).strip()}
+    if selected_match_ids:
+        rows = [row for row in rows if str(row["match_id"]).strip() in selected_match_ids]
     total_matches = len(rows)
     results: list[dict[str, Any]] = []
     skipped_matches: list[dict[str, Any]] = []
@@ -4212,7 +4216,10 @@ def predict_issue(
     manual_review_count = len(manual_review_matches)
     expert_review_failed_count = len(expert_review_failed_matches)
     target_batch_application = (
-        apply_target_batch_strategy_to_issue(str(_row_field(rows[0], "issue", "") or ""))
+        apply_target_batch_strategy_to_issue(
+            str(_row_field(rows[0], "issue", "") or ""),
+            match_ids=selected_match_ids or None,
+        )
         if predicted_count > 0 and rows
         else {
             "issue": str(issue or ""),
@@ -5090,10 +5097,14 @@ def settle_match_result(
 def settle_issue_results(
     issue: str | None = None,
     progress_callback=None,
+    match_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     init_db()
     issue_text = str(issue or "").strip() or get_latest_issue()
     rows = list_matches_pending_settlement(issue_text or None)
+    selected_match_ids = {str(match_id).strip() for match_id in (match_ids or []) if str(match_id).strip()}
+    if selected_match_ids:
+        rows = [row for row in rows if str(row["match_id"]).strip() in selected_match_ids]
     if not rows:
         return {
             "issue": issue_text,
@@ -7459,7 +7470,10 @@ def _latest_issue_prediction_rows(issue: str) -> list[dict[str, Any]]:
     return rows
 
 
-def apply_target_batch_strategy_to_issue(issue: str | None = None) -> dict[str, Any]:
+def apply_target_batch_strategy_to_issue(
+    issue: str | None = None,
+    match_ids: list[str] | None = None,
+) -> dict[str, Any]:
     selected_issue = str(issue or get_latest_issue() or "").strip()
     if not selected_issue:
         return {
@@ -7472,6 +7486,9 @@ def apply_target_batch_strategy_to_issue(issue: str | None = None) -> dict[str, 
             "settled_skip_count": 0,
         }
     rows = _latest_issue_prediction_rows(selected_issue)
+    selected_match_ids = {str(match_id).strip() for match_id in (match_ids or []) if str(match_id).strip()}
+    if selected_match_ids:
+        rows = [row for row in rows if str(_row_value(row, "match_id", "") or "").strip() in selected_match_ids]
     mutable_rows: list[dict[str, Any]] = []
     settled_skip_count = 0
     for row in rows:
