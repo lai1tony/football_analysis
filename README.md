@@ -13,12 +13,12 @@
 - 预测流程: 特征快照、量化概率、启发式概率、融合概率、动作策略、LLM 复核、二级仲裁、目标批量策略落库、赛后反馈。
 - 学习闭环: 训练候选只在点击“训练学习候选”时执行离线策略搜索；首页会区分“历史保存反馈”和“当前策略回放”，避免把旧 prediction runs 的累计反馈误读为 active profile 的回测成绩。
 - 历史回放补数: 点击“回放补齐历史期”会按缺口向更早期号回放，流程为同步对赛、逐场超时采集、整期预测、同步赛果、写入 `roi_source='replay_backfill'` 的反馈；部分闭环期不会计作完整学习样本。
-- 让球盘学习策略: 当前 active learning profile 为 #43，策略类型 `handicap_bucket_table`，用于让球盘推荐。当前全量历史回放样本 1245 场，执行 751 场，执行占比 60.32%，执行命中率 72.17%；训练目标为让球盘命中率 `>= 70%`、执行占比 `>= 60%`。只有验证达标的学习候选才能启用。
+- 让球盘学习策略: 当前 active learning profile 为 #45，策略类型 `handicap_bucket_table`，用于让球盘推荐。当前全量历史回放样本 1232 场，执行 964 场，执行占比 78.25%，执行命中率 74.27%；训练目标为让球盘命中率 `>= 70%`、执行占比 `>= 60%`。只有验证达标的学习候选才能启用。
 - 目标批量生产层: `coverage_draw_rescue` 会在 `predict_match()` 单场保存后、`predict_issue()` 整期完成后应用到同期期数未结算 latest prediction runs，写回 `recommendation`、`recommended_outcome`、`suggested_stake_pct` 和 `effective_*`，来源标记为 `target_batch_strategy`。策略计算读取原始 `algo_*` 底稿，避免重复应用时把自身写回结果当成新输入；已有 `feedback_logs` 的赛前 canonical run 会被跳过，防止赛后重预测改写赛前基准。
 - 本期精选 TOP3: 首页按当前期 `issue_top_picks` 展示精选场次；执行当前期赛果同步结算后会刷新 TOP3，已结算场次显示命中/错误、实际赛果和比分，命中率只按已结算 TOP3 计算。
 - 历史样本: 截至 2026-06-15，本地 SQLite 内 `26059` 到 `26085` 共 27 期、378 条已采集样本的核心采集维度已补齐，其中 `market_value_summary` 覆盖 378/378。
-- 历史保存反馈: 首页“历史反馈”统计的是 `feedback_logs` 中已经保存的旧 prediction runs，可能混合多个 learning profile，不会随 #43 启用自动改写。要查看 #43 口径，应看同一面板中的“当前策略回放”。
-- 未来预测: active learning profile #43 会在生成让球盘 `handicap_risk` 后应用到新 prediction runs；胜平负最终执行动作仍由 `coverage_draw_rescue` 目标批量生产层落库。
+- 历史保存反馈: 首页“历史反馈”统计的是 `feedback_logs` 中已经保存的旧 prediction runs，可能混合多个 learning profile，不会随 #45 启用自动改写。要查看 #45 口径，应看同一面板中的“当前策略回放”。
+- 未来预测: active learning profile #45 会在生成让球盘 `handicap_risk` 后应用到新 prediction runs；胜平负最终执行动作仍由 `coverage_draw_rescue` 目标批量生产层落库。
 - 批量操作范围: 首页对赛列表支持勾选多场；勾选后采集、预测、同步赛果并结算只处理选中对赛，未勾选时仍按当前期全量处理。
 - 页面口径: “赛后结果与赛前预测对比”分开展示胜平负和让球盘的已结算、正确、错误、命中率和 ROI；AI 预测中台分开展示胜平负建议仓位和让球盘建议仓位，两者均为分数 Kelly 口径。
 
