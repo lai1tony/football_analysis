@@ -7,8 +7,8 @@
 | 文件 | 职责 |
 | --- | --- |
 | `app.py` | Flask Web 入口，页面渲染、表单动作、后台任务和进度轮询 |
-| `source_500_client.py` | 500.com / odds.500.com 页面抓取、重试和 `gb18030` 解码 |
-| `collection_strategy.py` | 统一采集策略，按字段记录 `主源/已有数据 -> playwright-cli -> anysearch` 的来源和质量 |
+| `source_500_client.py` | 500.com / odds.500.com 页面抓取、重试、`gb18030` 解码和核心详情页批量抓取 |
+| `collection_strategy.py` | 统一采集策略，按字段记录 `主源/已有数据 -> playwright-cli -> anysearch` 的来源和质量，并过滤搜索兜底里的页面 UI 噪声 |
 | `collection_service.py` | 采集编排、HTML 解析、结构化字段生成 |
 | `collection_repository.py` | SQLite schema、读写、统计、学习配置、TOP3 持久化 |
 | `source_market_value_client.py` | 球队球员身价采集，Transfermarkt/Playwright 优先，AnySearch 抽取 Transfermarkt 页面兜底 |
@@ -31,7 +31,7 @@
 500.com 当前期列表
   -> sync_matches()
   -> matches
-  -> collect_match()
+  -> collect_match()  # 并发抓取 shuju/ouzhi/touzhu/yazhi；解析和写库仍串行
   -> collection_strategy.apply_unified_collection_strategy()
   -> analyses
   -> predict_match()
@@ -72,7 +72,7 @@
 
 策略计算读取原始 `algo_recommendation`、`algo_recommended_outcome`、`algo_suggested_stake_pct` 作为单场模型底稿，不读取自己上次写回的最终动作，避免重复应用时自我反馈。已有 `feedback_logs` 的 run 会被 `apply_target_batch_strategy_to_issue()` 跳过；比赛开赛后再生成的新预测由 `save_prediction_run()` 追加保存，不替换赛前 canonical run，也不搬运旧反馈。页面和 TOP3 优先使用 `effective_recommendation`，为空时才回退到原始 `recommendation`。TOP3 会优先选 `主推/轻仓`，可执行不足 3 场时才用 `观望` 补齐。
 
-Web 批量采集、预测和赛果结算表单支持 `selected_match_ids`。有勾选时，`collect_all_matches()`、`predict_issue()`、`settle_issue_results()` 和目标批量策略只处理这些 match_id；未勾选时才按当前期全量处理。维护这条链路时要避免选中预测改写未勾选比赛的 latest run。
+Web 批量采集、预测、赛果结算和删除表单支持 `selected_match_ids`。有勾选时，`collect_all_matches()`、`predict_issue()`、`settle_issue_results()` 和目标批量策略只处理这些 match_id；删除勾选对赛会经 `delete_matches()` 清理 `feedback_logs`、`issue_top_picks`、`prediction_runs`、`feature_snapshots`、`analyses` 和 `matches`。未勾选时批量采集/预测/结算才按当前期全量处理。维护这条链路时要避免选中预测改写未勾选比赛的 latest run，也不要只删 `matches` 留下孤儿关联记录。
 
 `suggested_stake_pct` 是胜平负主推荐链路的最终仓位字段，会被 `coverage_draw_rescue` 写回。让球盘目前没有单独持久化仓位列；Flask 页面在 `_decorate_prediction_run()` 中基于让球推荐侧、覆盖率、赔率、EV、信心和 `action_policy.stake_for_action()` 临时派生 `handicap_suggested_stake_pct` 供展示。两者都是分数 Kelly 口径，不是 full Kelly。
 
@@ -125,3 +125,4 @@ python -m unittest test_collection_quality
 - 回放补数卡住: 优先检查单场采集是否超时；`replay_backfill.py` 会对子进程设超时并保留已采集 rows，修复后可直接重跑续接。
 - 采集失败: 先跑 `list_current_matches.py` 或 `collect_current_first_match.py` 验证上游页面结构。
 - 500.com 编码异常: `source_500_client.fetch_html()` 默认按 `gb18030` 解码并重试，除非确认 bug，否则不要随意改。
+- 搜索兜底污染: 如果字段里出现 `跳至内容`、`辅助功能反馈`、`隐私政策`、`使用条款` 或 `Rewards` 这类搜索页 UI 文案，优先检查 `collection_strategy.SEARCH_LINKS_JS` 和 `_format_search_summary()` 的过滤逻辑，再重采对应场次。

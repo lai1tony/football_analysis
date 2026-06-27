@@ -42,7 +42,7 @@ LLM_REVIEW_ENABLED=true
 FOOTBALL_SCRAPER_BACKEND=requests
 ```
 
-核心 500.com 抓取默认使用 `requests`；分析字段补采使用统一策略 `主源/已有数据 -> playwright-cli -> anysearch`。阵容/伤停优先 Flashscore，缺失时可回退到 RotoWire；球队身价以 Transfermarkt 为准，Playwright 未命中时由 AnySearch 抽取 Transfermarkt 页面兜底。LLM 和外部搜索是增强能力，缺失时应记录来源/质量或失败备注，不应伪造字段。
+核心 500.com 抓取默认使用 `requests`；单场采集会并发抓取 `shuju`、`ouzhi`、`touzhu`、`yazhi` 四个详情页，每个 worker 使用独立 requests session。切到 `FOOTBALL_SCRAPER_BACKEND=playwright-cli` 时批量抓取会退回串行路径，避免浏览器会话互相堵塞。分析字段补采使用统一策略 `主源/已有数据 -> playwright-cli -> anysearch`，搜索兜底会过滤搜索页 UI/导航噪声。阵容/伤停优先 Flashscore，缺失时可回退到 RotoWire；球队身价以 Transfermarkt 为准，Playwright 未命中时由 AnySearch 抽取 Transfermarkt 页面兜底。LLM 和外部搜索是增强能力，缺失时应记录来源/质量或失败备注，不应伪造字段。
 
 ## 启动 Web
 

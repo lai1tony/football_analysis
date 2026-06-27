@@ -79,10 +79,24 @@ LOW_CONFIDENCE_MARKERS = (
     "placeholder",
 )
 
+SEARCH_NOISE_PHRASES = (
+    "跳至内容",
+    "辅助功能反馈",
+    "隐私政策",
+    "使用条款",
+    "skip to content",
+    "accessibility feedback",
+    "privacy policy",
+    "terms of use",
+    "terms and conditions",
+    "english",
+    "rewards",
+)
+
 SEARCH_LINKS_JS = (
     "JSON.stringify("
-    "[...document.querySelectorAll('a[href]')]"
-    ".slice(0, 80)"
+    "[...document.querySelectorAll('li.b_algo h2 a[href], li.b_algo .b_title a[href], li.b_algo a[href]')]"
+    ".slice(0, 20)"
     ".map(a => ({ text: (a.textContent || '').trim(), href: a.href }))"
     ")"
 )
@@ -127,6 +141,20 @@ def unique_non_empty(values: list[str]) -> list[str]:
 
 def split_lines(value: str) -> list[str]:
     return [line for line in unique_non_empty((value or "").splitlines()) if line]
+
+
+def _is_search_noise_summary(title: str, snippet: str) -> bool:
+    text = normalize_text(f"{title} {snippet}")
+    if not text:
+        return True
+    folded = text.casefold()
+    if not any(phrase in folded for phrase in SEARCH_NOISE_PHRASES):
+        return False
+    useful_text = folded
+    for phrase in SEARCH_NOISE_PHRASES:
+        useful_text = useful_text.replace(phrase, "")
+    useful_text = re.sub(r"[\W_]+", " ", useful_text).strip()
+    return not useful_text
 
 
 def _field_value(analysis: Mapping[str, Any], field: str) -> str:
@@ -238,11 +266,11 @@ def _iter_search_items(output: str) -> list[dict[str, str]]:
 def _format_search_summary(items: list[dict[str, str]], provider: str) -> tuple[str, list[str]]:
     lines: list[str] = []
     sources: list[str] = []
-    for item in items[:3]:
+    for item in items:
         title = normalize_text(item.get("title", ""))
         snippet = normalize_text(item.get("snippet", ""))
         url = normalize_text(item.get("url", ""))
-        if not title and not snippet:
+        if _is_search_noise_summary(title, snippet):
             continue
         summary = title
         if snippet:
@@ -250,6 +278,8 @@ def _format_search_summary(items: list[dict[str, str]], provider: str) -> tuple[
         lines.append(summary[:260])
         if url:
             sources.append(f"{provider}: {url}")
+        if len(lines) >= 3:
+            break
     return "\n".join(lines), sources
 
 
@@ -358,7 +388,7 @@ def _write_quality_summary(analysis: dict[str, Any], events: list[StrategyEvent]
 def _apply_market_value(match: Mapping[str, Any], analysis: dict[str, Any]) -> tuple[list[str], list[str]]:
     sources: list[str] = []
     errors: list[str] = []
-    if _field_value(analysis, "market_value_summary"):
+    if _has_usable_value(analysis, "market_value_summary"):
         return sources, errors
     result = fetch_match_market_values(
         str(match.get("home_team", "") or ""),

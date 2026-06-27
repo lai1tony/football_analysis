@@ -45,8 +45,10 @@ from collection_service import (  # noqa: F401
     get_missing_required_dimensions,
     normalize_text,
     list_selectable_matches,
+    remove_matches,
     remove_selectable_match,
     summarize_issue_entries,
+    sync_finished_date_matches,
     sync_issue_matches,
     sync_matches,
 )

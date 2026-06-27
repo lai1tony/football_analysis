@@ -72,7 +72,7 @@
               >
               <span>
                 <strong>{{ match['home_team'] }} vs {{ match['away_team'] }}</strong>
-                <em>{{ match['league'] }} · {{ match['match_time'] }} · match_id {{ match['match_id'] }}{% if is_added %} · 已在列表{% endif %}</em>
+                <em><span class="selectable-league">{{ match['league'] }}</span> · {{ match['match_time'] }} · match_id {{ match['match_id'] }}{% if is_added %} · 已在列表{% endif %}</em>
               </span>
             </label>
             {% endfor %}
@@ -99,6 +99,27 @@
             inputmode="numeric"
             pattern="\d+"
             placeholder="例如 26069"
+            autocomplete="off"
+            required
+            {% if db_status['read_only'] %}disabled title="数据库当前只读，无法补入"{% endif %}
+          >
+          <button
+            type="submit"
+            class="btn btn-secondary"
+            data-idle-text="补入"
+            data-busy-text="补入中..."
+            {% if db_status['read_only'] %}disabled title="数据库当前只读，无法补入"{% endif %}
+          >补入</button>
+        </div>
+      </form>
+
+      <form method="post" action="{{ url_for('sync_finished_date_view') }}" class="stack-form issue-backfill-form" data-busy-form>
+        <label for="finished_date">按日期补入完场赛事</label>
+        <div class="issue-backfill-row">
+          <input
+            id="finished_date"
+            name="finished_date"
+            type="date"
             autocomplete="off"
             required
             {% if db_status['read_only'] %}disabled title="数据库当前只读，无法补入"{% endif %}
@@ -257,6 +278,17 @@
           <div class="match-empty">当前期号没有对赛。</div>
           {% endfor %}
         </div>
+        {% if matches %}
+        <form method="post" action="{{ url_for('delete_matches_view') }}" class="match-delete-form" data-match-delete-form>
+          <input type="hidden" name="issue" value="{{ selected_issue }}">
+          <input type="hidden" name="current_match_id" value="{{ selected_match_id }}">
+          <button
+            type="submit"
+            class="delete-selected-matches"
+            {% if db_status['read_only'] %}disabled title="数据库当前只读，无法删除"{% endif %}
+          >删除勾选对赛</button>
+        </form>
+        {% endif %}
       </div>
     </aside>
 
@@ -1032,6 +1064,21 @@
               <div class="prediction-label">综合置信度</div>
               <div class="prediction-main">{{ '%.1f'|format(latest_prediction['confidence_score'] * 10) }}/10</div>
               <div class="prediction-sub">风险等级 {{ latest_prediction['risk_level'] }}</div>
+              {% set kelly_handicap_side = latest_prediction['handicap_recommended_side'] %}
+              {% set kelly_handicap_odds = 0 %}
+              {% if kelly_handicap_side == 'home' %}
+                {% set kelly_handicap_odds = latest_prediction['handicap_home_odds'] or 0 %}
+              {% elif kelly_handicap_side == 'away' %}
+                {% set kelly_handicap_odds = latest_prediction['handicap_away_odds'] or 0 %}
+              {% endif %}
+              <button
+                type="button"
+                class="kelly-calculator-button"
+                data-kelly-open
+                data-handicap-action="{{ latest_prediction['handicap_recommendation'] or '观望' }}"
+                data-handicap-odds="{{ '%.4f'|format(kelly_handicap_odds) }}"
+                data-handicap-label="{{ latest_prediction['handicap_pick_label'] or '观望' }}"
+              >凯利公式计算器</button>
             </div>
             <div class="prediction-metric-card">
               <div class="prediction-label">胜平负建议仓位</div>
@@ -1263,6 +1310,35 @@
       {% endif %}
     </main>
   </div>
+
+  {% if latest_prediction %}
+  <div class="kelly-modal" id="kellyCalculator" hidden>
+    <div class="kelly-modal-backdrop" data-kelly-close></div>
+    <div class="kelly-modal-panel" role="dialog" aria-modal="true" aria-labelledby="kellyCalculatorTitle">
+      <div class="kelly-modal-head">
+        <div>
+          <div class="kelly-modal-title" id="kellyCalculatorTitle">凯利公式计算器</div>
+          <div class="kelly-modal-sub" id="kellyCalculatorPick">{{ latest_prediction['handicap_pick_label'] or '观望' }}</div>
+        </div>
+        <button type="button" class="kelly-modal-close" data-kelly-close aria-label="关闭">&times;</button>
+      </div>
+      <label class="kelly-field" for="kellyPrincipal">
+        <span>本金</span>
+        <input id="kellyPrincipal" type="number" min="0" step="0.01" inputmode="decimal" placeholder="输入本金">
+      </label>
+      <div class="kelly-result-grid">
+        <div>
+          <span>凯利仓位</span>
+          <strong id="kellyStakePct">0.00%</strong>
+        </div>
+        <div>
+          <span>下注金额</span>
+          <strong id="kellyBetAmount">0.00</strong>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   <script>
     (function () {
@@ -1534,6 +1610,107 @@
             });
         });
       });
+
+      document.querySelectorAll('[data-match-delete-form]').forEach(function (form) {
+        form.addEventListener('submit', function (event) {
+          var selectedIds = getSelectedMatchIds();
+          if (!selectedIds.length) {
+            event.preventDefault();
+            window.alert('请先勾选要删除的对赛。');
+            return;
+          }
+          form.querySelectorAll('input[name="selected_match_ids"]').forEach(function (input) {
+            input.remove();
+          });
+          selectedIds.forEach(function (matchId) {
+            var input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'selected_match_ids';
+            input.value = matchId;
+            form.appendChild(input);
+          });
+        });
+      });
+
+      var kellyModal = document.getElementById('kellyCalculator');
+      var kellyPrincipal = document.getElementById('kellyPrincipal');
+      var kellyStakePct = document.getElementById('kellyStakePct');
+      var kellyBetAmount = document.getElementById('kellyBetAmount');
+      var kellyPick = document.getElementById('kellyCalculatorPick');
+      var KELLY_WIN_RATE = 0.74;
+      var activeKellyStakePct = 0;
+
+      function profitRateFromHandicapOdds(rawOdds) {
+        var odds = Number(rawOdds || 0);
+        if (odds <= 0) {
+          return 0;
+        }
+        return odds > 1.5 ? odds - 1 : odds;
+      }
+
+      function kellyStakePctFromOdds(rawOdds, action) {
+        var actionText = String(action || '');
+        if (actionText !== '主推' && actionText !== '轻仓') {
+          return 0;
+        }
+        var profitRate = profitRateFromHandicapOdds(rawOdds);
+        if (profitRate <= 0) {
+          return 0;
+        }
+        var lossRate = 1 - KELLY_WIN_RATE;
+        var fraction = (profitRate * KELLY_WIN_RATE - lossRate) / profitRate;
+        if (!Number.isFinite(fraction) || fraction <= 0) {
+          return 0;
+        }
+        return fraction * 100;
+      }
+
+      function updateKellyAmount() {
+        if (!kellyPrincipal || !kellyBetAmount) {
+          return;
+        }
+        var principal = Number(kellyPrincipal.value || 0);
+        var amount = principal > 0 ? principal * activeKellyStakePct / 100 : 0;
+        kellyBetAmount.textContent = amount.toLocaleString('zh-CN', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        });
+      }
+
+      document.querySelectorAll('[data-kelly-open]').forEach(function (button) {
+        button.addEventListener('click', function () {
+          if (!kellyModal) {
+            return;
+          }
+          activeKellyStakePct = kellyStakePctFromOdds(
+            button.getAttribute('data-handicap-odds'),
+            button.getAttribute('data-handicap-action')
+          );
+          if (kellyStakePct) {
+            kellyStakePct.textContent = activeKellyStakePct.toFixed(2) + '%';
+          }
+          if (kellyPick) {
+            kellyPick.textContent = button.getAttribute('data-handicap-label') || '观望';
+          }
+          updateKellyAmount();
+          kellyModal.hidden = false;
+          if (kellyPrincipal) {
+            kellyPrincipal.focus();
+          }
+        });
+      });
+
+      document.querySelectorAll('[data-kelly-close]').forEach(function (button) {
+        button.addEventListener('click', function () {
+          if (kellyModal) {
+            kellyModal.hidden = true;
+          }
+        });
+      });
+
+      if (kellyPrincipal) {
+        kellyPrincipal.addEventListener('input', updateKellyAmount);
+      }
 
       if (activeTaskId && activeStatusUrl) {
         setCollectButtonsDisabled(true);

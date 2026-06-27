@@ -1,5 +1,6 @@
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from time import sleep
 from urllib.parse import urljoin
@@ -14,8 +15,10 @@ SOURCE_URL = "https://trade.500.com/sfc/"
 ISSUE_SOURCE_URL_TEMPLATE = "https://trade.500.com/sfc/?expect={issue}"
 RESULT_SOURCE_URL_TEMPLATE = "https://trade.500.com/rj/?expect={issue}"
 LIVE_SELECTABLE_URL = "https://live.500.com/2h1.php"
+LIVE_FINISHED_URL = "https://live.500.com/wanchang.php"
 SFC_RESULTS_INDEX_URL = "https://kaijiang.500.com/sfc.shtml"
 RESULT_PAGE_BASE_URL = "https://odds.500.com/fenxi/"
+LIVE_FINISHED_ISSUE_PREFIX = "wc"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -62,6 +65,64 @@ def fetch_html(url: str, backend: str | None = None) -> str:
     return fetch_html_via_playwright_cli(url)
 
 
+def _fetch_html_via_isolated_requests(url: str) -> str:
+    session = requests.Session()
+    session.trust_env = False
+    attempts = 3
+    last_error = None
+    try:
+        for idx in range(attempts):
+            try:
+                response = session.get(url, headers=HEADERS, timeout=30)
+                if response.status_code == 429:
+                    raise requests.HTTPError("429 Too Many Requests", response=response)
+                response.raise_for_status()
+                return response.content.decode("gb18030", errors="ignore")
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                if idx < attempts - 1:
+                    sleep(1.2 * (idx + 1))
+                else:
+                    raise
+        raise RuntimeError(f"抓取失败: {url}; {last_error}")
+    finally:
+        session.close()
+
+
+def fetch_html_batch(
+    urls: dict[str, str],
+    backend: str | None = None,
+    *,
+    max_workers: int = 4,
+) -> dict[str, str]:
+    items = [(key, url) for key, url in urls.items()]
+    if not items:
+        return {}
+    for key, url in items:
+        if not str(url or "").strip():
+            raise RuntimeError(f"{key} 页面 URL 为空")
+
+    selected_backend = resolve_scraper_backend(backend)
+    if selected_backend != "requests" or len(items) == 1:
+        return {key: fetch_html(url, selected_backend) for key, url in items}
+
+    results: dict[str, str] = {}
+    worker_count = max(1, min(int(max_workers or 1), len(items)))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(_fetch_html_via_isolated_requests, url): key
+            for key, url in items
+        }
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                results[key] = future.result()
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"{key} 页面抓取失败：{exc}") from exc
+
+    return {key: results[key] for key, _url in items}
+
+
 def extract_issue(html: str) -> str:
     selected = re.search(
         r"<option\b(?=[^>]*\bselected\b)(?=[^>]*\bvalue=[\"'](\d+)[\"'])[^>]*>",
@@ -86,6 +147,34 @@ def issue_source_url(issue: str) -> str:
     if not issue_text.isdigit():
         raise RuntimeError("issue 必须是数字期号")
     return ISSUE_SOURCE_URL_TEMPLATE.format(issue=issue_text)
+
+
+def finished_issue_from_date(match_date: str) -> str:
+    date_text = str(match_date or "").strip()
+    try:
+        parsed = datetime.strptime(date_text, "%Y-%m-%d")
+    except ValueError as exc:
+        raise RuntimeError("完场日期必须是 YYYY-MM-DD") from exc
+    return f"{LIVE_FINISHED_ISSUE_PREFIX}{parsed:%Y%m%d}"
+
+
+def finished_date_from_issue(issue: str) -> str:
+    issue_text = str(issue or "").strip().lower()
+    match = re.fullmatch(rf"{LIVE_FINISHED_ISSUE_PREFIX}(\d{{8}})", issue_text)
+    if not match:
+        return ""
+    value = match.group(1)
+    try:
+        parsed = datetime.strptime(value, "%Y%m%d")
+    except ValueError:
+        return ""
+    return parsed.strftime("%Y-%m-%d")
+
+
+def live_finished_source_url(match_date: str) -> str:
+    date_text = str(match_date or "").strip()
+    finished_issue_from_date(date_text)
+    return f"{LIVE_FINISHED_URL}?e={date_text}"
 
 
 def parse_match_list_html(
@@ -165,6 +254,144 @@ def fetch_issue_matches(issue: str) -> list[dict]:
     url = issue_source_url(issue)
     html = fetch_html(url)
     return parse_match_list_html(html, requested_issue=str(issue or "").strip(), source_url=url)
+
+
+def _normalize_finished_match_time(value: str, match_date: str) -> str:
+    text = re.sub(r"\s+", " ", (value or "").replace("\xa0", " ")).strip()
+    date_text = str(match_date or "").strip()
+    if not text:
+        return date_text
+    if re.search(r"\d{4}-\d{1,2}-\d{1,2}", text):
+        return text
+    if date_text and re.match(r"^\d{1,2}-\d{1,2}\b", text):
+        return f"{date_text[:4]}-{text}"
+    return text
+
+
+def _parse_live_finished_rows(
+    html: str,
+    *,
+    issue: str,
+    match_date: str,
+    source_url: str,
+) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    sync_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows: list[dict] = []
+    seen: set[str] = set()
+
+    for row in soup.find_all("tr"):
+        row_id = str(row.get("id") or "").strip()
+        row_match = re.fullmatch(r"a(\d+)", row_id)
+        if not row_match:
+            continue
+        match_id = row_match.group(1)
+        if match_id in seen:
+            continue
+
+        cells = row.find_all("td")
+        if len(cells) < 7:
+            continue
+        home_node = cells[4].select_one(".mainName")
+        away_node = cells[6].select_one(".clientName")
+        home = home_node.get_text(" ", strip=True) if home_node else _live_team_name(cells[4])
+        away = away_node.get_text(" ", strip=True) if away_node else _live_team_name(cells[6])
+        if not home or not away:
+            continue
+
+        actual_score, actual_result = _parse_result_score(cells[5].get_text(" ", strip=True))
+        seen.add(match_id)
+        rows.append(
+            {
+                "match_id": match_id,
+                "issue": issue,
+                "league": cells[0].get_text(" ", strip=True),
+                "match_no": str(9000 + len(rows) + 1),
+                "match_time": _normalize_finished_match_time(
+                    cells[2].get_text(" ", strip=True) if len(cells) > 2 else "",
+                    match_date,
+                ),
+                "home_team": home,
+                "away_team": away,
+                "source_match_url": source_url,
+                "shuju_url": f"https://odds.500.com/fenxi/shuju-{match_id}.shtml",
+                "ouzhi_url": f"https://odds.500.com/fenxi/ouzhi-{match_id}.shtml?ctype=2",
+                "touzhu_url": f"https://odds.500.com/fenxi/touzhu-{match_id}.shtml",
+                "yazhi_url": f"https://odds.500.com/fenxi/yazhi-{match_id}.shtml",
+                "list_odds_win": "",
+                "list_odds_draw": "",
+                "list_odds_loss": "",
+                "list_heat_win": "",
+                "list_heat_draw": "",
+                "list_heat_loss": "",
+                "sync_time": sync_time,
+                "actual_score": actual_score,
+                "actual_result": actual_result,
+                "result_source_url": source_url,
+            }
+        )
+    return rows
+
+
+def parse_live_finished_matches_html(
+    html: str,
+    *,
+    issue: str,
+    match_date: str,
+    source_url: str,
+) -> list[dict]:
+    return [
+        {key: value for key, value in row.items() if key not in {"actual_score", "actual_result", "result_source_url"}}
+        for row in _parse_live_finished_rows(
+            html,
+            issue=issue,
+            match_date=match_date,
+            source_url=source_url,
+        )
+    ]
+
+
+def parse_live_finished_results_html(
+    html: str,
+    *,
+    issue: str,
+    match_date: str,
+    source_url: str,
+) -> list[dict]:
+    results: list[dict] = []
+    for row in _parse_live_finished_rows(
+        html,
+        issue=issue,
+        match_date=match_date,
+        source_url=source_url,
+    ):
+        if not row["actual_score"] or not row["actual_result"]:
+            continue
+        results.append(
+            {
+                "match_id": row["match_id"],
+                "issue": issue,
+                "home_team": row["home_team"],
+                "away_team": row["away_team"],
+                "actual_score": row["actual_score"],
+                "actual_result": row["actual_result"],
+                "result_status": "settled",
+                "result_source_url": row["result_source_url"],
+            }
+        )
+    return results
+
+
+def fetch_live_finished_matches(match_date: str) -> list[dict]:
+    issue = finished_issue_from_date(match_date)
+    url = live_finished_source_url(match_date)
+    html = fetch_html(url)
+    return parse_live_finished_matches_html(
+        html,
+        issue=issue,
+        match_date=str(match_date or "").strip(),
+        source_url=url,
+    )
 
 
 def _normalize_live_match_time(value: str) -> str:
@@ -404,5 +631,15 @@ def parse_issue_results_html(html: str, *, issue: str = "") -> list[dict]:
 
 def fetch_issue_results(issue: str) -> list[dict]:
     issue_text = str(issue or "").strip()
+    finished_date = finished_date_from_issue(issue_text)
+    if finished_date:
+        source_url = live_finished_source_url(finished_date)
+        html = fetch_html(source_url)
+        return parse_live_finished_results_html(
+            html,
+            issue=issue_text,
+            match_date=finished_date,
+            source_url=source_url,
+        )
     html = fetch_html(issue_result_source_url(issue_text))
     return parse_issue_results_html(html, issue=issue_text)

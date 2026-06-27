@@ -837,6 +837,55 @@ def upsert_match_results(results: list[dict]) -> None:
     _run_write(_operation)
 
 
+def _delete_matches_by_ids(conn: sqlite3.Connection, match_ids: list[str]) -> int:
+    if not match_ids:
+        return 0
+    placeholders = ",".join("?" for _ in match_ids)
+    conn.execute(
+        f"""
+        DELETE FROM feedback_logs
+        WHERE match_id IN ({placeholders})
+           OR prediction_run_id IN (
+                SELECT run_id
+                FROM prediction_runs
+                WHERE match_id IN ({placeholders})
+           )
+        """,
+        tuple(match_ids + match_ids),
+    )
+    conn.execute(
+        f"""
+        DELETE FROM issue_top_picks
+        WHERE match_id IN ({placeholders})
+           OR run_id IN (
+                SELECT run_id
+                FROM prediction_runs
+                WHERE match_id IN ({placeholders})
+           )
+        """,
+        tuple(match_ids + match_ids),
+    )
+    conn.execute(f"DELETE FROM prediction_runs WHERE match_id IN ({placeholders})", tuple(match_ids))
+    conn.execute(f"DELETE FROM feature_snapshots WHERE match_id IN ({placeholders})", tuple(match_ids))
+    conn.execute(f"DELETE FROM analyses WHERE match_id IN ({placeholders})", tuple(match_ids))
+    cursor = conn.execute(f"DELETE FROM matches WHERE match_id IN ({placeholders})", tuple(match_ids))
+    return int(cursor.rowcount or 0)
+
+
+def delete_matches(match_ids: list[str]) -> int:
+    normalized_ids = []
+    seen = set()
+    for raw_match_id in match_ids:
+        match_id = str(raw_match_id or "").strip()
+        if match_id and match_id not in seen:
+            normalized_ids.append(match_id)
+            seen.add(match_id)
+    if not normalized_ids:
+        return 0
+
+    return _run_write(lambda conn: _delete_matches_by_ids(conn, normalized_ids))
+
+
 def delete_custom_match(match_id: str, *, source_match_url: str) -> bool:
     match_id_text = str(match_id or "").strip()
     source_url_text = str(source_match_url or "").strip()
@@ -855,23 +904,7 @@ def delete_custom_match(match_id: str, *, source_match_url: str) -> bool:
         ).fetchone()
         if row is None:
             return False
-        conn.execute(
-            """
-            DELETE FROM feedback_logs
-            WHERE match_id = ?
-               OR prediction_run_id IN (
-                    SELECT run_id
-                    FROM prediction_runs
-                    WHERE match_id = ?
-               )
-            """,
-            (match_id_text, match_id_text),
-        )
-        conn.execute("DELETE FROM prediction_runs WHERE match_id = ?", (match_id_text,))
-        conn.execute("DELETE FROM feature_snapshots WHERE match_id = ?", (match_id_text,))
-        conn.execute("DELETE FROM analyses WHERE match_id = ?", (match_id_text,))
-        conn.execute("DELETE FROM matches WHERE match_id = ?", (match_id_text,))
-        return True
+        return _delete_matches_by_ids(conn, [match_id_text]) > 0
 
     return _run_write(_operation)
 

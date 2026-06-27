@@ -28,7 +28,11 @@ def _read_int_env(name: str, default: int) -> int:
 def _resolve_cli_bin() -> str:
     cli_bin = os.getenv("PLAYWRIGHT_CLI_BIN", "").strip()
     if cli_bin:
-        return cli_bin
+        resolved = shutil.which(cli_bin)
+        if resolved:
+            return resolved
+        if os.path.exists(cli_bin):
+            return cli_bin
 
     candidates = ["playwright-cli"]
     if os.name == "nt":

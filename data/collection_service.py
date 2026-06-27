@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 from collection_repository import (
     DEFAULT_ISSUE_RETENTION_COUNT,
     delete_custom_match,
+    delete_matches,
     get_collection_stats,
     get_latest_issue,
     get_match,
@@ -32,8 +33,11 @@ from source_500_client import (
     LIVE_SELECTABLE_URL,
     fetch_current_matches,
     fetch_html,
+    fetch_html_batch,
     fetch_issue_matches,
+    fetch_live_finished_matches,
     fetch_live_selectable_matches,
+    finished_issue_from_date,
 )
 from source_lineup_client import build_failure_notes, supplement_injury_or_lineup_notes
 from source_supplement_client import supplement_match_data
@@ -146,6 +150,10 @@ COLLECTION_PLACEHOLDER_TEXTS = (
     "未在公开来源中命中预计首发",
     "外部公开来源补采未命中",
     "伤停/阵容补采失败",
+    "collection note",
+    "user_daily_quota_exhausted",
+    "quota_exhausted",
+    "quota_limit",
 )
 # 这些值表示"真实无数据"而非"采集失败"，不应被当作缺失维度
 LEGITIMATE_EMPTY_TEXTS = (
@@ -226,6 +234,10 @@ def get_missing_required_dimensions(data: Mapping[str, Any] | None) -> list[str]
         return []
 
     missing: list[str] = []
+    field_labels = {
+        field: f"{title}/{label}"
+        for title, field, label in required_dimension_fields()
+    }
     for title, field, label in required_dimension_fields():
         if field in OPTIONAL_DIMENSION_FIELDS:
             continue
@@ -237,6 +249,15 @@ def get_missing_required_dimensions(data: Mapping[str, Any] | None) -> list[str]
         elif any(value == token for token in LEGITIMATE_EMPTY_TEXTS):
             # 合法的空数据（如"双方暂无交战历史"），不算缺失
             pass
+    for line in split_lines(str(_field_value(data, "collection_quality_summary", "") or "")):
+        if "status=missing" not in line:
+            continue
+        field_part = line.split(":", 1)[0].rsplit(".", 1)[-1]
+        if field_part in OPTIONAL_DIMENSION_FIELDS:
+            continue
+        label = field_labels.get(field_part)
+        if label and label not in missing:
+            missing.append(label)
     return missing
 
 
@@ -954,9 +975,38 @@ def sync_issue_matches(issue: str, return_details: bool = False) -> list[dict] |
     return matches
 
 
+def sync_finished_date_matches(match_date: str, return_details: bool = False) -> list[dict] | dict[str, object]:
+    date_text = str(match_date or "").strip()
+    issue_text = finished_issue_from_date(date_text)
+    matches = fetch_live_finished_matches(date_text)
+    upsert_matches(matches)
+    retention = prune_to_recent_issues(DEFAULT_ISSUE_RETENTION_COUNT)
+    if return_details:
+        status_message, status_level = _build_issue_sync_retention_message(
+            issue_text,
+            len(matches),
+            retention,
+        )
+        return {
+            "matches": matches,
+            "issue": issue_text,
+            "match_date": date_text,
+            "retention": retention,
+            "status_message": status_message,
+            "status_level": status_level,
+        }
+    return matches
+
+
 def list_selectable_matches(issue: str = "") -> list[dict]:
     issue_text = str(issue or "").strip() or get_latest_issue()
-    return fetch_live_selectable_matches(issue_text)
+    return sorted(
+        fetch_live_selectable_matches(issue_text),
+        key=lambda match: (
+            not str(match.get("match_time", "")).strip(),
+            str(match.get("match_time", "")).strip(),
+        ),
+    )
 
 
 def add_selectable_matches(
@@ -1041,6 +1091,52 @@ def remove_selectable_match(
             "status_level": "warning",
         }
     return result if return_details else deleted
+
+
+def remove_matches(
+    match_ids: list[str],
+    *,
+    issue: str = "",
+    return_details: bool = False,
+) -> int | dict[str, object]:
+    selected_ids = []
+    seen = set()
+    for raw_match_id in match_ids:
+        match_id = str(raw_match_id or "").strip()
+        if match_id and match_id not in seen:
+            selected_ids.append(match_id)
+            seen.add(match_id)
+    issue_text = str(issue or "").strip()
+    if not selected_ids:
+        result = {
+            "deleted_count": 0,
+            "selected_count": 0,
+            "issue": issue_text,
+            "status_message": "请先勾选要删除的对赛。",
+            "status_level": "warning",
+        }
+        return result if return_details else 0
+
+    deleted_count = delete_matches(selected_ids)
+    missing_count = max(len(selected_ids) - deleted_count, 0)
+    if deleted_count and missing_count:
+        status_level = "warning"
+        status_message = f"已删除勾选对赛 {deleted_count} 场，{missing_count} 场已不存在。"
+    elif deleted_count:
+        status_level = "success"
+        status_message = f"已删除勾选对赛 {deleted_count} 场。"
+    else:
+        status_level = "warning"
+        status_message = "未删除：所选对赛已不存在。"
+
+    result = {
+        "deleted_count": deleted_count,
+        "selected_count": len(selected_ids),
+        "issue": issue_text,
+        "status_message": status_message,
+        "status_level": status_level,
+    }
+    return result if return_details else deleted_count
 
 
 def _section_text(node) -> str:
@@ -1317,6 +1413,11 @@ def build_heat_summary(match: sqlite3.Row, touzhu_html: str) -> str:
         if len(prices) >= 3:
             return f"{summary}；成交价 {prices[0]}/{prices[1]}/{prices[2]}"
         return summary
+    text = normalize_text(BeautifulSoup(touzhu_html or "", "html.parser").get_text(" ", strip=True))
+    for marker in ("数据提点", "本场比赛必发", "必发交易"):
+        idx = text.find(marker)
+        if idx >= 0:
+            return text[idx: idx + 220]
     return ""
 
 
@@ -1358,7 +1459,11 @@ def _supplement_missing_dimensions(
         analysis["elo_home"] = supplement["elo_home"]
     if supplement.get("elo_away") and not _field_value(analysis, "elo_away"):
         analysis["elo_away"] = supplement["elo_away"]
-    if supplement.get("market_value_summary") and not _field_value(analysis, "market_value_summary"):
+    existing_market_value = normalize_text(str(_field_value(analysis, "market_value_summary") or ""))
+    if supplement.get("market_value_summary") and (
+        not existing_market_value
+        or any(token in existing_market_value for token in COLLECTION_PLACEHOLDER_TEXTS)
+    ):
         analysis["market_value_summary"] = supplement["market_value_summary"]
     if supplement.get("head_to_head_summary") and not _field_value(analysis, "head_to_head_summary"):
         analysis["head_to_head_summary"] = supplement["head_to_head_summary"]
@@ -1421,11 +1526,19 @@ def collect_match(match_id: str, progress_callback=None, *, fast_mode: bool = Fa
         current_step="抓取 500 页面",
         message=f"正在抓取 500 基础页面：{match_label}",
     )
-    shuju_html = fetch_html(match["shuju_url"])
-    ouzhi_html = fetch_html(match["ouzhi_url"])
-    touzhu_html = fetch_html(match["touzhu_url"])
     yazhi_url = match["yazhi_url"] if "yazhi_url" in match.keys() and match["yazhi_url"] else f"https://odds.500.com/fenxi/yazhi-{match_id}.shtml"
-    yazhi_html = fetch_html(yazhi_url)
+    base_pages = fetch_html_batch(
+        {
+            "shuju": match["shuju_url"],
+            "ouzhi": match["ouzhi_url"],
+            "touzhu": match["touzhu_url"],
+            "yazhi": yazhi_url,
+        }
+    )
+    shuju_html = base_pages["shuju"]
+    ouzhi_html = base_pages["ouzhi"]
+    touzhu_html = base_pages["touzhu"]
+    yazhi_html = base_pages["yazhi"]
 
     _emit_progress(
         progress_callback,
@@ -2008,8 +2121,10 @@ __all__ = [
     "list_matches",
     "list_matches_by_issue",
     "normalize_text",
+    "remove_matches",
     "summarize_issue_entries",
     "serialize_match",
+    "sync_finished_date_matches",
     "sync_issue_matches",
     "sync_matches",
 ]
