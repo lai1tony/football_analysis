@@ -8,6 +8,7 @@ import app as web_app_module
 import backfill_collection_quality
 import collection_repository
 import collection_strategy
+import playwright_cli_client
 from feature_engine import build_match_features, extract_market_value_metrics
 import collection_service
 import prediction_engine
@@ -81,6 +82,56 @@ class CollectionQualityTests(TemporaryDatabaseTestCase):
             source_500_client.parse_sfc_issue_sequence_html(html),
             ["25195", "25196", "26001"],
         )
+
+    def test_search_summary_rejects_accessibility_noise(self) -> None:
+        summary, sources = collection_strategy._format_search_summary(
+            [
+                {
+                    "title": "跳至内容",
+                    "snippet": "辅助功能反馈",
+                    "url": "https://www.bing.com/search?q=noise",
+                },
+            ],
+            "AnySearch",
+        )
+
+        self.assertEqual(summary, "")
+        self.assertEqual(sources, [])
+
+    def test_search_summary_rejects_search_navigation_noise(self) -> None:
+        summary, sources = collection_strategy._format_search_summary(
+            [
+                {"title": "隐私政策", "snippet": "", "url": "https://www.bing.com/privacy"},
+                {"title": "使用条款", "snippet": "", "url": "https://www.bing.com/terms"},
+                {"title": "English", "snippet": "", "url": "https://www.bing.com/setlang"},
+                {"title": "Rewards", "snippet": "", "url": "https://www.bing.com/rewards"},
+            ],
+            "PlaywrightSearch",
+        )
+
+        self.assertEqual(summary, "")
+        self.assertEqual(sources, [])
+
+    def test_search_summary_skips_noise_and_keeps_meaningful_result(self) -> None:
+        summary, sources = collection_strategy._format_search_summary(
+            [
+                {
+                    "title": "跳至内容",
+                    "snippet": "辅助功能反馈",
+                    "url": "https://www.bing.com/search?q=noise",
+                },
+                {
+                    "title": "Home FC vs Away FC odds movement",
+                    "snippet": "Opening price moved from 2.10 to 1.95 before kickoff.",
+                    "url": "https://example.test/odds",
+                },
+            ],
+            "AnySearch",
+        )
+
+        self.assertIn("Home FC vs Away FC odds movement", summary)
+        self.assertNotIn("跳至内容", summary)
+        self.assertEqual(sources, ["AnySearch: https://example.test/odds"])
 
     def test_market_value_parser_accepts_squad_worth_language(self):
         value = source_market_value_client.extract_market_value_eur_m(
@@ -172,6 +223,51 @@ class CollectionQualityTests(TemporaryDatabaseTestCase):
         self.assertEqual(value.source_label, "AnySearch partial Transfermarkt")
         self.assertIn("source: AnySearch partial Transfermarkt", value.summary)
 
+    def test_anysearch_market_value_rejects_amount_not_near_team_name(self):
+        search_output = """
+## Search Results (1 results, 10ms)
+
+### 1. Capalaba Bulldogs - Club profile | Transfermarkt
+- **URL**: https://www.transfermarkt.com/capalaba-bulldogs/startseite/verein/8805
+- Curaçao's squad is here with a squad value of €28.7m.
+"""
+        extracted = "Squad Capalaba Bulldogs | Player | Market value | Matt McKay | -"
+        cache_path = Path(self.tempdir.name) / "market_value_failures.json"
+
+        with (
+            patch.object(source_market_value_client, "MARKET_VALUE_FAILURE_CACHE_PATH", cache_path),
+            patch.object(source_market_value_client, "_run_anysearch_search", return_value=search_output),
+            patch.object(source_market_value_client, "_run_anysearch_extract", return_value=extracted),
+        ):
+            value = source_market_value_client.fetch_team_market_value_via_anysearch(
+                "Capalaba Bulldogs",
+                "Australia Queensland Premier League",
+            )
+
+        self.assertEqual(value.value_eur_m, 0.0)
+        self.assertIn("AnySearch value not parsed", value.error)
+        self.assertTrue(cache_path.exists())
+
+    def test_anysearch_market_value_uses_cached_failure_to_skip_retry(self):
+        cache_path = Path(self.tempdir.name) / "market_value_failures.json"
+        cache_path.write_text(
+            '{"anysearch|capalaba bulldogs|australia": {"reason": "AnySearch value not parsed", "expires_at": 9999999999}}',
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(source_market_value_client, "MARKET_VALUE_FAILURE_CACHE_PATH", cache_path),
+            patch.object(source_market_value_client, "_run_anysearch_search") as search_mock,
+        ):
+            value = source_market_value_client.fetch_team_market_value_via_anysearch(
+                "Capalaba Bulldogs",
+                "Australia",
+            )
+
+        search_mock.assert_not_called()
+        self.assertEqual(value.value_eur_m, 0.0)
+        self.assertIn("cached failure", value.error)
+
     def test_market_value_metrics_parse_and_feed_strength_gap(self):
         summary = (
             "Home FC: squad market value EUR 120.50m (source: Transfermarkt)\n"
@@ -254,6 +350,46 @@ class CollectionQualityTests(TemporaryDatabaseTestCase):
         self.assertIn(("anysearch", "recent_form_home"), calls)
         self.assertIn("stage=anysearch", analysis["collection_quality_summary"])
         self.assertIn("https://example.test/form", analysis["media_source_links"])
+
+    def test_unified_strategy_retries_market_value_after_failure_note(self):
+        analysis = {
+            "market_value_summary": "market value collection note: AnySearch value not parsed",
+            "media_source_links": "",
+            "collected_sources": "",
+            "collection_quality_summary": "",
+            "remarks": "",
+        }
+        with (
+            patch.object(
+                collection_strategy,
+                "fetch_match_market_values",
+                return_value={
+                    "market_value_summary": "Home: squad market value EUR 10.00m (source: Transfermarkt)",
+                    "sources": ["Transfermarkt: https://example.test/team"],
+                    "errors": [],
+                },
+            ) as mock_fetch,
+            patch.object(collection_strategy, "_apply_playwright_supplement", return_value=([], [])),
+            patch.object(collection_strategy, "_playwright_search_field", return_value=("", [], "")),
+            patch.object(collection_strategy, "_anysearch_field", return_value=("", [], "")),
+        ):
+            collection_strategy.apply_unified_collection_strategy(
+                {
+                    "home_team": "Home FC",
+                    "away_team": "Away FC",
+                    "league": "Test League",
+                    "match_time": "",
+                },
+                analysis,
+                required_fields=["market_value_summary"],
+            )
+
+        mock_fetch.assert_called_once()
+        self.assertEqual(
+            analysis["market_value_summary"],
+            "Home: squad market value EUR 10.00m (source: Transfermarkt)",
+        )
+        self.assertIn("status=success", analysis["collection_quality_summary"])
 
     def test_unified_strategy_can_skip_external_fallbacks_for_batch_replay(self):
         analysis = {
@@ -419,6 +555,75 @@ class CollectionQualityTests(TemporaryDatabaseTestCase):
         self.assertEqual(stats["success_analyses"], 1)
         self.assertEqual(stats["failed_analyses"], 0)
 
+    def test_quality_summary_missing_rows_keep_collection_incomplete(self) -> None:
+        row = {
+            "collected_at": "2026-04-29 10:00:00",
+            "elo_home": "ok",
+            "elo_away": "ok",
+            "market_value_summary": "market value collection note: AnySearch value not parsed",
+            "recent_form_home": "ok",
+            "recent_form_away": "ok",
+            "home_away_form": "ok",
+            "head_to_head_summary": "ok",
+            "injury_or_lineup_notes": "ok",
+            "motivation_or_schedule_notes": "ok",
+            "european_odds_movement_summary": "ok",
+            "asian_handicap_summary": "ok",
+            "betting_heat_summary": "user_daily_quota_exhausted: quota_limit: 0",
+            "collection_quality_summary": "\n".join(
+                [
+                    "strategy: primary -> playwright-cli -> anysearch",
+                    "dim1_strength.market_value_summary: status=missing; stage=anysearch; source=search; quality=0.00",
+                ]
+            ),
+        }
+
+        missing = collection_service.get_missing_required_dimensions(row)
+
+        self.assertNotIn("维度一：基础实力/球队球员身价", missing)
+        self.assertIn("维度三：市场数据/投注热度", missing)
+
+    def test_playwright_cli_resolution_falls_back_when_env_path_is_stale(self) -> None:
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "PLAYWRIGHT_CLI_BIN": "C:/missing/runtime/playwright-cli.cmd",
+                },
+            ),
+            patch.object(
+                playwright_cli_client.shutil,
+                "which",
+                side_effect=lambda name: (
+                    "C:/npm/playwright-cli.cmd"
+                    if name == "playwright-cli.cmd"
+                    else None
+                ),
+            ),
+        ):
+            self.assertEqual(
+                playwright_cli_client._resolve_cli_bin(),
+                "C:/npm/playwright-cli.cmd",
+            )
+
+    def test_build_heat_summary_uses_betfair_trade_text_when_list_heat_missing(self) -> None:
+        match = {
+            "list_heat_win": "",
+            "list_heat_draw": "",
+            "list_heat_loss": "",
+        }
+        html = """
+        <html><body>
+        <section>数据提点 本场比赛必发交易规模 超千万，成交量倾向于 主胜。</section>
+        <section>必发交易 18,114,482 总交易[港币]</section>
+        </body></html>
+        """
+
+        summary = collection_service.build_heat_summary(match, html)
+
+        self.assertIn("数据提点", summary)
+        self.assertIn("必发交易规模", summary)
+
     def test_collect_all_auto_retries_until_collection_succeeds(self) -> None:
         self.insert_match()
         failure = {
@@ -527,6 +732,23 @@ class CollectionQualityTests(TemporaryDatabaseTestCase):
         self.assertEqual(stats["success_analyses"], 0)
         self.assertEqual(stats["failed_analyses"], 1)
 
+    def test_collect_match_fetch_failure_does_not_save_partial_analysis(self) -> None:
+        self.insert_match()
+
+        with (
+            patch("collection_service.fetch_html_batch", side_effect=RuntimeError("网络异常")),
+            patch("collection_service.save_analysis") as mock_save_analysis,
+            patch("collection_service.save_feature_snapshot") as mock_save_snapshot,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "网络异常"):
+                collection_service.collect_match("M1")
+
+        mock_save_analysis.assert_not_called()
+        mock_save_snapshot.assert_not_called()
+        row = collection_repository.get_match_analysis("M1")
+        self.assertEqual(row["collection_status"], "uncollected")
+        self.assertIsNone(row["collected_at"])
+
     def test_collect_match_marks_missing_required_dimension_and_stats_failed(self) -> None:
         self.insert_match()
         lineup_result = SimpleNamespace(
@@ -546,7 +768,12 @@ class CollectionQualityTests(TemporaryDatabaseTestCase):
         )
 
         with (
-            patch("collection_service.fetch_html", return_value="<html></html>"),
+            patch("collection_service.fetch_html_batch", return_value={
+                "shuju": "<html></html>",
+                "ouzhi": "<html></html>",
+                "touzhu": "<html></html>",
+                "yazhi": "<html></html>",
+            }),
             patch("collection_service.extract_recent_forms", return_value=("主队近况", "")),
             patch("collection_service.extract_h2h", return_value="双方近 3 次交锋主队 2 胜 1 平"),
             patch("collection_service.extract_strength_snapshots", return_value={
@@ -561,6 +788,7 @@ class CollectionQualityTests(TemporaryDatabaseTestCase):
             patch("collection_service.build_heat_summary", return_value="投注比 胜40% 平30% 负30%"),
             patch("collection_service.supplement_injury_or_lineup_notes", return_value=lineup_result),
             patch("collection_service.apply_unified_collection_strategy", return_value=None),
+            patch("collection_service._supplement_missing_dimensions"),
             patch("collection_service.build_feature_snapshot", return_value=None),
         ):
             result = collection_service.collect_match("M1")
@@ -578,7 +806,12 @@ class CollectionQualityTests(TemporaryDatabaseTestCase):
         self.insert_match()
 
         with (
-            patch("collection_service.fetch_html", return_value="<html></html>"),
+            patch("collection_service.fetch_html_batch", return_value={
+                "shuju": "<html></html>",
+                "ouzhi": "<html></html>",
+                "touzhu": "<html></html>",
+                "yazhi": "<html></html>",
+            }),
             patch("collection_service.extract_recent_forms", return_value=("主队近况", "")),
             patch("collection_service.extract_h2h", return_value="双方近 3 次交锋主队 2 胜 1 平"),
             patch("collection_service.extract_lineup_notes", return_value="预计首发已从 500 页面提取"),

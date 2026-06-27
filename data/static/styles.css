@@ -402,6 +402,14 @@ a:hover {
   line-height: 1.45;
 }
 
+.selectable-league {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #fff7cc;
+  color: #713f12;
+}
+
 .selectable-message {
   padding: 0 18px 18px;
   color: #cbd5e1;
@@ -582,6 +590,31 @@ a:hover {
 }
 
 .delete-custom-match:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.match-delete-form {
+  padding: 0 14px 14px;
+}
+
+.delete-selected-matches {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid rgba(248, 113, 113, 0.38);
+  border-radius: 12px;
+  background: rgba(127, 29, 29, 0.78);
+  color: #fee2e2;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.delete-selected-matches:hover {
+  background: rgba(153, 27, 27, 0.9);
+}
+
+.delete-selected-matches:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
@@ -1308,6 +1341,137 @@ a:hover {
   margin-top: 8px;
   font-size: 12px;
   line-height: 1.35;
+}
+
+.kelly-calculator-button {
+  margin-top: 28px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid rgba(37, 99, 235, 0.22);
+  border-radius: 10px;
+  background: rgba(37, 99, 235, 0.08);
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.kelly-calculator-button:hover {
+  background: rgba(37, 99, 235, 0.14);
+}
+
+.kelly-modal[hidden] {
+  display: none;
+}
+
+.kelly-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.kelly-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.36);
+}
+
+.kelly-modal-panel {
+  position: relative;
+  width: min(360px, 100%);
+  padding: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 20px 48px rgba(15, 23, 42, 0.22);
+}
+
+.kelly-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.kelly-modal-title {
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 850;
+  line-height: 1.25;
+}
+
+.kelly-modal-sub {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.kelly-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.9);
+  color: #334155;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.kelly-field {
+  display: grid;
+  gap: 6px;
+}
+
+.kelly-field span,
+.kelly-result-grid span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.kelly-field input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 10px;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.kelly-result-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.kelly-result-grid div {
+  min-width: 0;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.kelly-result-grid strong {
+  display: block;
+  margin-top: 4px;
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 850;
+  line-height: 1.2;
 }
 
 .score-chip-row {

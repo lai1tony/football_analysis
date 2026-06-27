@@ -8,8 +8,9 @@
 - 数据库: `data/football_data.db`。
 - Public GitHub 仓库只包含源码、文档、脚本和 `.env.example` 占位模板；真实 `.env`、SQLite 数据库、日志、虚拟环境、构建输出和安装包只保留在本地或私有分发包中。
 - 数据来源: 500.com 胜负彩页面及 odds.500.com 详情页；缺失字段通过统一策略按 `主源/已有数据 -> playwright-cli -> anysearch` 补采，公开辅助源包括 Flashscore、RotoWire、Understat、Soccerway 和 Transfermarkt。
+- 采集并发范围: 单场采集会并发抓取 `shuju`、`ouzhi`、`touzhu`、`yazhi` 四个 500 详情页以缩短等待；页面解析、外部兜底、特征快照和 SQLite 写入仍串行执行。Playwright 后端保持串行，避免浏览器会话互相堵塞。
 - 基础实力新增球队球员身价: `market_value_summary` 记录主客队总身价和差值，预测特征会把双方身价差纳入实力评估。身价源以 Transfermarkt 为准，Playwright 未命中时由 AnySearch 抽取 Transfermarkt 页面兜底。
-- 采集质量记录: `analyses.collection_quality_summary` 保存每个字段的采集阶段、来源和质量分，便于复盘哪些数据来自主源、Playwright 或 AnySearch。
+- 采集质量记录: `analyses.collection_quality_summary` 保存每个字段的采集阶段、来源和质量分，便于复盘哪些数据来自主源、Playwright 或 AnySearch；搜索兜底会过滤搜索页无障碍、隐私、条款、奖励入口等导航噪声，避免把 UI 文案当成有效比赛数据。
 - 预测流程: 特征快照、量化概率、启发式概率、融合概率、动作策略、LLM 复核、二级仲裁、目标批量策略落库、赛后反馈。
 - 学习闭环: 训练候选只在点击“训练学习候选”时执行离线策略搜索；首页会区分“历史保存反馈”和“当前策略回放”，避免把旧 prediction runs 的累计反馈误读为 active profile 的回测成绩。
 - 历史回放补数: 点击“回放补齐历史期”会按缺口向更早期号回放，流程为同步对赛、逐场超时采集、整期预测、同步赛果、写入 `roi_source='replay_backfill'` 的反馈；部分闭环期不会计作完整学习样本。
@@ -19,7 +20,7 @@
 - 历史样本: 截至 2026-06-15，本地 SQLite 内 `26059` 到 `26085` 共 27 期、378 条已采集样本的核心采集维度已补齐，其中 `market_value_summary` 覆盖 378/378。
 - 历史保存反馈: 首页“历史反馈”统计的是 `feedback_logs` 中已经保存的旧 prediction runs，可能混合多个 learning profile，不会随 #45 启用自动改写。要查看 #45 口径，应看同一面板中的“当前策略回放”。
 - 未来预测: active learning profile #45 会在生成让球盘 `handicap_risk` 后应用到新 prediction runs；胜平负最终执行动作仍由 `coverage_draw_rescue` 目标批量生产层落库。
-- 批量操作范围: 首页对赛列表支持勾选多场；勾选后采集、预测、同步赛果并结算只处理选中对赛，未勾选时仍按当前期全量处理。
+- 批量操作范围: 首页对赛列表支持勾选多场；勾选后采集、预测、同步赛果并结算只处理选中对赛，未勾选时仍按当前期全量处理；删除勾选对赛会同时清理对应采集、预测、反馈和 TOP3 关联记录。
 - 页面口径: “赛后结果与赛前预测对比”分开展示胜平负和让球盘的已结算、正确、错误、命中率和 ROI；AI 预测中台分开展示胜平负建议仓位和让球盘建议仓位，两者均为分数 Kelly 口径。
 
 ## 快速启动

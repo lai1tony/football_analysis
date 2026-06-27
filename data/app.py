@@ -33,10 +33,12 @@ from collector_store import (
     predict_issue,
     predict_match,
     record_feedback,
+    remove_matches,
     remove_selectable_match,
     resolve_manual_review,
     settle_match_result,
     settle_issue_results,
+    sync_finished_date_matches,
     sync_issue_matches,
     sync_matches,
 )
@@ -724,6 +726,23 @@ def sync_issue_view():
     )
 
 
+@app.post("/sync-finished-date")
+def sync_finished_date_view():
+    _ensure_db_initialized()
+    match_date = request.form.get("finished_date", "").strip()
+    try:
+        result = sync_finished_date_matches(match_date, return_details=True)
+    except DatabaseWriteUnavailableError as exc:
+        return _index_redirect(message=str(exc), level="error")
+    except Exception as exc:  # noqa: BLE001
+        return _index_redirect(message=f"操作失败：{exc}", level="error")
+    return _index_redirect(
+        issue=str(result.get("issue", "") if isinstance(result, dict) else ""),
+        message=str(result.get("status_message", "") if isinstance(result, dict) else ""),
+        level=str(result.get("status_level", "info") if isinstance(result, dict) else "info"),
+    )
+
+
 @app.post("/select-matches")
 def select_matches_view():
     _ensure_db_initialized()
@@ -751,6 +770,22 @@ def delete_selectable_match_view(match_id: str):
     current_match_id = request.form.get("current_match_id", "").strip()
     result = remove_selectable_match(match_id, issue=issue, return_details=True)
     next_match_id = "" if current_match_id == match_id else current_match_id
+    return _index_redirect(
+        match_id=next_match_id,
+        issue=str(result.get("issue", issue) if isinstance(result, dict) else issue),
+        message=str(result.get("status_message", "") if isinstance(result, dict) else ""),
+        level=str(result.get("status_level", "info") if isinstance(result, dict) else "info"),
+    )
+
+
+@app.post("/matches/delete")
+def delete_matches_view():
+    _ensure_db_initialized()
+    issue = request.form.get("issue", "").strip()
+    current_match_id = request.form.get("current_match_id", "").strip()
+    selected_match_ids = _selected_match_ids_from_form()
+    result = remove_matches(selected_match_ids, issue=issue, return_details=True)
+    next_match_id = "" if current_match_id in selected_match_ids else current_match_id
     return _index_redirect(
         match_id=next_match_id,
         issue=str(result.get("issue", issue) if isinstance(result, dict) else issue),

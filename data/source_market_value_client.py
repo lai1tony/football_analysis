@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ ANYSEARCH_COMMAND = [
     "node",
     "C:/Users/15696/.codex/skills/anysearch/scripts/anysearch_cli.js",
 ]
+MARKET_VALUE_FAILURE_CACHE_PATH = Path(__file__).resolve().parent / ".market_value_source_failures.json"
 
 TEAM_SEARCH_ALIASES = {
     "墨西哥": ["Mexico"],
@@ -88,6 +90,94 @@ class TeamMarketValue:
 
 def normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
+
+
+def _failure_cache_ttl_seconds() -> int:
+    try:
+        value = int(os.environ.get("FOOTBALL_MARKET_VALUE_FAILURE_TTL_SECONDS", "86400") or "86400")
+    except ValueError:
+        value = 86400
+    return max(value, 60)
+
+
+def _failure_cache_key(provider: str, team_name: str, league: str = "") -> str:
+    return "|".join(
+        normalize_text(item).lower()
+        for item in (provider, team_name, league)
+        if normalize_text(item)
+    )
+
+
+def _is_cacheable_failure(reason: str) -> bool:
+    folded = str(reason or "").lower()
+    if not folded:
+        return False
+    if any(token in folded for token in ("quota", "api_key", "rate limit", "user_daily_quota")):
+        return False
+    return True
+
+
+def _load_failure_cache() -> dict[str, dict[str, Any]]:
+    try:
+        payload = json.loads(MARKET_VALUE_FAILURE_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    now = time.time()
+    cleaned = {
+        str(key): value
+        for key, value in payload.items()
+        if isinstance(value, dict) and float(value.get("expires_at", 0) or 0) > now
+    }
+    if len(cleaned) != len(payload):
+        _save_failure_cache(cleaned)
+    return cleaned
+
+
+def _save_failure_cache(cache: dict[str, dict[str, Any]]) -> None:
+    try:
+        if cache:
+            MARKET_VALUE_FAILURE_CACHE_PATH.write_text(
+                json.dumps(cache, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        elif MARKET_VALUE_FAILURE_CACHE_PATH.exists():
+            MARKET_VALUE_FAILURE_CACHE_PATH.unlink()
+    except OSError:
+        pass
+
+
+def _cached_failure_reason(provider: str, team_name: str, league: str = "") -> str:
+    key = _failure_cache_key(provider, team_name, league)
+    if not key:
+        return ""
+    item = _load_failure_cache().get(key) or {}
+    return normalize_text(str(item.get("reason", "") or ""))
+
+
+def _remember_failure(provider: str, team_name: str, reason: str, league: str = "") -> None:
+    if not _is_cacheable_failure(reason):
+        return
+    key = _failure_cache_key(provider, team_name, league)
+    if not key:
+        return
+    cache = _load_failure_cache()
+    cache[key] = {
+        "reason": normalize_text(reason)[:240],
+        "expires_at": time.time() + _failure_cache_ttl_seconds(),
+    }
+    _save_failure_cache(cache)
+
+
+def _clear_failure(provider: str, team_name: str, league: str = "") -> None:
+    key = _failure_cache_key(provider, team_name, league)
+    if not key:
+        return
+    cache = _load_failure_cache()
+    if key in cache:
+        cache.pop(key, None)
+        _save_failure_cache(cache)
 
 
 def _value_to_eur_m(amount: str, unit: str) -> float:
@@ -323,11 +413,21 @@ def _parse_transfermarkt_team_page(html: str, team_name: str) -> tuple[float, st
 
 def fetch_team_market_value_via_playwright(team_name: str) -> TeamMarketValue:
     result = TeamMarketValue(team_name=team_name)
+    cached_reason = _cached_failure_reason("playwright", team_name)
+    if cached_reason:
+        result.error = f"playwright market value skipped: cached failure: {cached_reason}"
+        return result
     browser = PlaywrightCliBrowser(PlaywrightCliSettings.from_env())
     try:
-        return fetch_team_market_value_with_browser(browser, team_name)
+        result = fetch_team_market_value_with_browser(browser, team_name)
+        if result.value_eur_m > 0:
+            _clear_failure("playwright", team_name)
+        elif result.error:
+            _remember_failure("playwright", team_name, result.error)
+        return result
     except Exception as exc:  # noqa: BLE001
         result.error = f"playwright market value failed: {exc}"
+        _remember_failure("playwright", team_name, result.error)
         return result
     finally:
         browser.close()
@@ -442,6 +542,21 @@ def _search_item_mentions_team(team_name: str, title: str, url: str, snippet: st
     return any(token in haystack for token in tokens)
 
 
+def _value_context_mentions_team(team_name: str, text: str) -> bool:
+    tokens = _team_tokens(team_name)
+    if not tokens:
+        return True
+    value_pattern = re.compile(
+        rf"(?:{_CURRENCY_PATTERN}\s*[0-9]+(?:[.,][0-9]+)?\s*{_UNIT_PATTERN}|[0-9]+(?:[.,][0-9]+)?\s*{_UNIT_PATTERN}\s*{_CURRENCY_PATTERN})",
+        re.I,
+    )
+    for match in value_pattern.finditer(text or ""):
+        context = _context_window(text, match.start(), match.end(), radius=140).lower()
+        if any(token in context for token in tokens):
+            return True
+    return False
+
+
 def _is_generic_competition_page(title: str, url: str, snippet: str) -> bool:
     haystack = f"{title} {url} {snippet}".lower()
     bad_tokens = (
@@ -535,6 +650,10 @@ def _iter_search_items(output: str) -> list[dict[str, Any]]:
 
 def fetch_team_market_value_via_anysearch(team_name: str, league: str = "") -> TeamMarketValue:
     result = TeamMarketValue(team_name=team_name)
+    cached_reason = _cached_failure_reason("anysearch", team_name, league)
+    if cached_reason:
+        result.error = f"anysearch market value skipped: cached failure: {cached_reason}"
+        return result
     candidates = _name_candidates(team_name)
     query_name = candidates[1] if len(candidates) > 1 else candidates[0]
     query = f"{query_name} {league} Transfermarkt squad market value".strip()
@@ -563,16 +682,26 @@ def fetch_team_market_value_via_anysearch(team_name: str, league: str = "") -> T
                 continue
             priority = _market_value_candidate_priority(title, url, snippet)
             text = " ".join([title, snippet, url])
-            value = extract_market_value_eur_m(text)
+            value = 0.0
+            if not url:
+                value = extract_market_value_eur_m(text)
+                if value > 0 and not _value_context_mentions_team(team_name, text):
+                    value = 0.0
             if value <= 0 and url:
                 try:
                     extracted = _run_anysearch_extract(url)
                     value = extract_market_value_eur_m(extracted)
+                    if value > 0 and not _value_context_mentions_team(team_name, extracted):
+                        value = 0.0
                     if value <= 0:
                         partial_value = extract_partial_squad_value_eur_m(extracted)
-                        if partial_value > 0 and (
+                        if (
+                            partial_value > 0
+                            and _value_context_mentions_team(team_name, extracted)
+                            and (
                             priority > best_partial_priority
                             or (priority == best_partial_priority and partial_value > best_partial_value)
+                            )
                         ):
                             best_partial_value = partial_value
                             best_partial_url = url
@@ -585,10 +714,18 @@ def fetch_team_market_value_via_anysearch(team_name: str, league: str = "") -> T
                         result.error = f"anysearch extract note: {exc}"
             elif value <= 0 and _has_total_market_value(text):
                 value = extract_market_value_eur_m(text)
+                if value > 0 and not _value_context_mentions_team(team_name, text):
+                    value = 0.0
             partial_from_snippet = extract_partial_squad_value_eur_m(text)
-            if value <= 0 and partial_from_snippet > 0 and (
+            if (
+                value <= 0
+                and not url
+                and partial_from_snippet > 0
+                and _value_context_mentions_team(team_name, text)
+                and (
                 priority > best_partial_priority
                 or (priority == best_partial_priority and partial_from_snippet > best_partial_value)
+                )
             ):
                 best_partial_value = partial_from_snippet
                 best_partial_url = url
@@ -615,9 +752,11 @@ def fetch_team_market_value_via_anysearch(team_name: str, league: str = "") -> T
         result.summary = format_market_value_summary(team_name, best_value, best_label)
         if best_snippet:
             result.summary += f"; snippet: {best_snippet[:180]}"
+        _clear_failure("anysearch", team_name, league)
         return result
     except Exception as exc:  # noqa: BLE001
         result.error = f"anysearch market value failed: {exc}"
+        _remember_failure("anysearch", team_name, result.error, league)
         return result
 
 

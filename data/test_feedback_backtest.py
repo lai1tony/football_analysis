@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import tempfile
 import unittest
 from contextlib import closing
@@ -321,6 +322,80 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
 
 
 class ResultParsingTests(unittest.TestCase):
+    def test_fetch_html_batch_requests_backend_fetches_concurrently(self) -> None:
+        active_count = 0
+        max_active_count = 0
+        lock = threading.Lock()
+        release = threading.Event()
+
+        def _fake_fetch(url: str) -> str:
+            nonlocal active_count, max_active_count
+            with lock:
+                active_count += 1
+                max_active_count = max(max_active_count, active_count)
+                if active_count >= 2:
+                    release.set()
+            release.wait(0.5)
+            with lock:
+                active_count -= 1
+            return f"html:{url}"
+
+        with patch.object(
+            source_500_client,
+            "_fetch_html_via_isolated_requests",
+            side_effect=_fake_fetch,
+        ):
+            result = source_500_client.fetch_html_batch(
+                {
+                    "shuju": "https://example.com/shuju",
+                    "ouzhi": "https://example.com/ouzhi",
+                    "touzhu": "https://example.com/touzhu",
+                },
+                backend="requests",
+                max_workers=3,
+            )
+
+        self.assertGreaterEqual(max_active_count, 2)
+        self.assertEqual(
+            result,
+            {
+                "shuju": "html:https://example.com/shuju",
+                "ouzhi": "html:https://example.com/ouzhi",
+                "touzhu": "html:https://example.com/touzhu",
+            },
+        )
+
+    def test_fetch_html_batch_playwright_backend_keeps_serial_fetch_path(self) -> None:
+        seen: list[tuple[str, str | None]] = []
+
+        def _fake_fetch(url: str, backend: str | None = None) -> str:
+            seen.append((url, backend))
+            return f"{backend}:{url}"
+
+        with patch.object(source_500_client, "fetch_html", side_effect=_fake_fetch):
+            result = source_500_client.fetch_html_batch(
+                {
+                    "shuju": "https://example.com/shuju",
+                    "ouzhi": "https://example.com/ouzhi",
+                },
+                backend="playwright-cli",
+            )
+
+        self.assertEqual(
+            seen,
+            [
+                ("https://example.com/shuju", "playwright-cli"),
+                ("https://example.com/ouzhi", "playwright-cli"),
+            ],
+        )
+        self.assertEqual(
+            result,
+            {
+                "shuju": "playwright-cli:https://example.com/shuju",
+                "ouzhi": "playwright-cli:https://example.com/ouzhi",
+            },
+        )
+
     def test_parse_issue_results_html_extracts_match_score_and_outcome(self) -> None:
         html = """
         <table class="bet-tb">
@@ -444,6 +519,76 @@ class ResultParsingTests(unittest.TestCase):
         self.assertTrue(any("rj/?expect=26069" in url for url in seen_urls))
         self.assertTrue(any("shuju-1407201.shtml" in url for url in seen_urls))
 
+    def test_parse_live_finished_matches_builds_date_issue_rows(self) -> None:
+        html = """
+        <table>
+          <tr id="a1422466" gy="美后备,主队,客队">
+            <td class="ssbox_01"><a>美后备</a></td>
+            <td>第1轮</td>
+            <td>06-25 10:00</td>
+            <td><span class="red">完</span></td>
+            <td><a><span class="mainName">主队</span></a></td>
+            <td><div class="pk"><a>2</a><a>-</a><a>3</a></div></td>
+            <td><a><span class="clientName">客队</span></a></td>
+            <td>2 - 2</td>
+            <td></td>
+            <td><a href="//odds.500.com/fenxi/shuju-1422466.shtml">析</a></td>
+          </tr>
+        </table>
+        """
+
+        rows = source_500_client.parse_live_finished_matches_html(
+            html,
+            issue="wc20260625",
+            match_date="2026-06-25",
+            source_url="https://live.500.com/wanchang.php?e=2026-06-25",
+        )
+        results = source_500_client.parse_live_finished_results_html(
+            html,
+            issue="wc20260625",
+            match_date="2026-06-25",
+            source_url="https://live.500.com/wanchang.php?e=2026-06-25",
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["match_id"], "1422466")
+        self.assertEqual(rows[0]["issue"], "wc20260625")
+        self.assertEqual(rows[0]["match_time"], "2026-06-25 10:00")
+        self.assertEqual(rows[0]["home_team"], "主队")
+        self.assertEqual(rows[0]["away_team"], "客队")
+        self.assertEqual(rows[0]["match_no"], "9001")
+        self.assertNotIn("actual_score", rows[0])
+        self.assertEqual(results[0]["actual_score"], "2-3")
+        self.assertEqual(results[0]["actual_result"], "away")
+
+    def test_fetch_issue_results_uses_finished_page_for_date_issue(self) -> None:
+        html = """
+        <table>
+          <tr id="a1422466">
+            <td>美后备</td>
+            <td>第1轮</td>
+            <td>06-25 10:00</td>
+            <td>完</td>
+            <td><span class="mainName">主队</span></td>
+            <td><div class="pk"><a>1</a><a>-</a><a>1</a></div></td>
+            <td><span class="clientName">客队</span></td>
+          </tr>
+        </table>
+        """
+        seen_urls: list[str] = []
+
+        def _fake_fetch_html(url: str) -> str:
+            seen_urls.append(url)
+            return html
+
+        with patch("source_500_client.fetch_html", side_effect=_fake_fetch_html):
+            rows = source_500_client.fetch_issue_results("wc20260625")
+
+        self.assertEqual(seen_urls, ["https://live.500.com/wanchang.php?e=2026-06-25"])
+        self.assertEqual(rows[0]["issue"], "wc20260625")
+        self.assertEqual(rows[0]["actual_score"], "1-1")
+        self.assertEqual(rows[0]["actual_result"], "draw")
+
     def test_fetch_issue_matches_parses_requested_issue_list(self) -> None:
         rows_html = "\n".join(
             f"""
@@ -501,6 +646,12 @@ class ResultParsingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "不一致"):
                 source_500_client.fetch_issue_matches("26069")
 
+    def test_finished_issue_from_date_rejects_bad_date(self) -> None:
+        self.assertEqual(source_500_client.finished_issue_from_date("2026-06-25"), "wc20260625")
+        self.assertEqual(source_500_client.finished_date_from_issue("wc20260625"), "2026-06-25")
+        with self.assertRaisesRegex(RuntimeError, "YYYY-MM-DD"):
+            source_500_client.finished_issue_from_date("20260625")
+
     def test_parse_live_selectable_matches_builds_collection_urls(self) -> None:
         html = """
         <table>
@@ -538,6 +689,18 @@ class ResultParsingTests(unittest.TestCase):
 
 
 class FeedbackBacktestTests(TemporaryDatabaseTestCase):
+    def test_list_selectable_matches_orders_by_match_time(self) -> None:
+        candidates = [
+            {"match_id": "late", "match_time": "2026-06-24 20:00"},
+            {"match_id": "early", "match_time": "2026-06-24 17:00"},
+            {"match_id": "empty", "match_time": ""},
+        ]
+
+        with patch("collection_service.fetch_live_selectable_matches", return_value=candidates):
+            rows = collection_service.list_selectable_matches("26099")
+
+        self.assertEqual([row["match_id"] for row in rows], ["early", "late", "empty"])
+
     def test_add_selectable_matches_upserts_selected_candidates(self) -> None:
         candidates = [
             {
@@ -620,6 +783,50 @@ class FeedbackBacktestTests(TemporaryDatabaseTestCase):
         self.assertTrue(deleted["deleted"])
         self.assertIsNotNone(collection_repository.get_match("regular1"))
         self.assertIsNone(collection_repository.get_match("1407734"))
+
+    def test_delete_matches_removes_related_rows(self) -> None:
+        issue = "26099"
+        self.insert_match("M1", issue=issue)
+        self.insert_match("M2", issue=issue)
+        self.insert_match("KEEP", issue=issue)
+        run_id = collection_repository.save_prediction_run(
+            self.prediction_payload("M1", issue=issue, created_at="2026-04-01 10:00:00")
+        )
+        collection_repository.save_feedback_log(
+            {
+                "prediction_run_id": run_id,
+                "match_id": "M1",
+                "actual_result": "home",
+                "actual_score": "2-1",
+                "settled_at": "2026-04-01 22:00:00",
+                "hit_recommendation": 1,
+                "roi_delta": 0.15,
+                "roi_source": "auto",
+                "notes": "",
+            }
+        )
+        self.save_snapshot("M1", issue=issue)
+        with closing(collection_repository.get_connection()) as conn:
+            conn.execute("INSERT INTO analyses (match_id) VALUES (?)", ("M1",))
+            conn.execute(
+                "INSERT INTO issue_top_picks (issue, rank, match_id, run_id) VALUES (?, ?, ?, ?)",
+                (issue, 1, "M1", run_id),
+            )
+            conn.commit()
+
+        deleted_count = collection_repository.delete_matches(["M1", "M2", "M1", ""])
+
+        self.assertEqual(deleted_count, 2)
+        self.assertIsNone(collection_repository.get_match("M1"))
+        self.assertIsNone(collection_repository.get_match("M2"))
+        self.assertIsNotNone(collection_repository.get_match("KEEP"))
+        with closing(collection_repository.get_connection()) as conn:
+            for table in ["analyses", "feature_snapshots", "feedback_logs", "prediction_runs", "issue_top_picks"]:
+                count = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE match_id = ?",
+                    ("M1",),
+                ).fetchone()[0]
+                self.assertEqual(count, 0, table)
 
     def test_save_prediction_run_replaces_existing_match_prediction(self) -> None:
         issue = "26088"
@@ -970,6 +1177,11 @@ class FeedbackBacktestTests(TemporaryDatabaseTestCase):
         self.assertIn("top-pick-result-pending", html)
         self.assertIn("2/3", html)
         self.assertIn("50.0%", html)
+        self.assertIn("data-kelly-open", html)
+        self.assertIn("凯利公式计算器", html)
+        self.assertIn("data-handicap-odds=\"2.0000\"", html)
+        self.assertIn("KELLY_WIN_RATE = 0.74", html)
+        self.assertIn("id=\"kellyBetAmount\"", html)
 
     def test_preview_production_single_pick_is_read_only_and_uses_target_batch_layer(self) -> None:
         issue = "26100"
@@ -1192,7 +1404,7 @@ class FeedbackBacktestTests(TemporaryDatabaseTestCase):
         self.assertTrue(
             all(call.kwargs.get("apply_issue_strategy") is False for call in predict_mock.call_args_list)
         )
-        apply_mock.assert_called_once_with(issue)
+        apply_mock.assert_called_once_with(issue, match_ids=None)
 
     def test_apply_target_batch_strategy_skips_settled_runs(self) -> None:
         issue = "26103"
@@ -1391,6 +1603,41 @@ class FeedbackBacktestTests(TemporaryDatabaseTestCase):
         self.assertEqual(len(result["matches"]), 1)
         self.assertEqual(result["status_level"], "success")
         self.assertIn("已补入期号 26069", result["status_message"])
+
+    def test_sync_finished_date_matches_upserts_date_issue(self) -> None:
+        matches = [
+            {
+                "match_id": "1422466",
+                "issue": "wc20260625",
+                "league": "美后备",
+                "match_no": "9001",
+                "match_time": "2026-06-25 10:00",
+                "home_team": "主队",
+                "away_team": "客队",
+                "source_match_url": "https://live.500.com/wanchang.php?e=2026-06-25",
+                "shuju_url": "https://odds.500.com/fenxi/shuju-1422466.shtml",
+                "ouzhi_url": "https://odds.500.com/fenxi/ouzhi-1422466.shtml?ctype=2",
+                "touzhu_url": "https://odds.500.com/fenxi/touzhu-1422466.shtml",
+                "yazhi_url": "https://odds.500.com/fenxi/yazhi-1422466.shtml",
+                "list_odds_win": "",
+                "list_odds_draw": "",
+                "list_odds_loss": "",
+                "list_heat_win": "",
+                "list_heat_draw": "",
+                "list_heat_loss": "",
+                "sync_time": "2026-06-25 12:00:00",
+            }
+        ]
+
+        with patch.object(collection_service, "fetch_live_finished_matches", return_value=matches):
+            result = collection_service.sync_finished_date_matches("2026-06-25", return_details=True)
+
+        stored = collection_repository.get_match_analysis("1422466")
+        self.assertIsNotNone(stored)
+        self.assertEqual(str(stored["issue"]), "wc20260625")
+        self.assertEqual(result["issue"], "wc20260625")
+        self.assertEqual(result["match_date"], "2026-06-25")
+        self.assertIn("已补入期号 wc20260625", result["status_message"])
 
     def test_canonical_run_is_current_unique_prediction(self) -> None:
         self.insert_match("M1", issue="20260429")
@@ -2252,6 +2499,37 @@ class ManualReviewWebTests(TemporaryDatabaseTestCase):
 
 
 class WebSettlementTests(unittest.TestCase):
+    def test_delete_matches_route_deletes_checked_matches(self) -> None:
+        client = web_app_module.app.test_client()
+        with (
+            patch.object(web_app_module, "_ensure_db_initialized"),
+            patch.object(
+                web_app_module,
+                "remove_matches",
+                return_value={
+                    "deleted_count": 2,
+                    "selected_count": 2,
+                    "issue": "26099",
+                    "status_message": "已删除勾选对赛 2 场。",
+                    "status_level": "success",
+                },
+            ) as mock_remove,
+        ):
+            response = client.post(
+                "/matches/delete",
+                data={
+                    "issue": "26099",
+                    "current_match_id": "M1",
+                    "selected_match_ids": ["M1", "M2"],
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("issue=26099", response.headers["Location"])
+        self.assertIn("level=success", response.headers["Location"])
+        self.assertNotIn("match_id=M1", response.headers["Location"])
+        mock_remove.assert_called_once_with(["M1", "M2"], issue="26099", return_details=True)
+
     def test_delete_selectable_match_route_deletes_custom_match(self) -> None:
         client = web_app_module.app.test_client()
         with (
@@ -2346,6 +2624,28 @@ class WebSettlementTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("level=error", response.headers["Location"])
 
+    def test_sync_finished_date_route_redirects_to_date_issue(self) -> None:
+        client = web_app_module.app.test_client()
+        with (
+            patch.object(web_app_module, "_ensure_db_initialized"),
+            patch.object(
+                web_app_module,
+                "sync_finished_date_matches",
+                return_value={
+                    "issue": "wc20260625",
+                    "matches": [],
+                    "status_message": "已补入期号 wc20260625 对赛 42 场",
+                    "status_level": "success",
+                },
+            ) as mock_sync,
+        ):
+            response = client.post("/sync-finished-date", data={"finished_date": "2026-06-25"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("issue=wc20260625", response.headers["Location"])
+        self.assertIn("level=success", response.headers["Location"])
+        mock_sync.assert_called_once_with("2026-06-25", return_details=True)
+
     def test_index_renders_single_settlement_button(self) -> None:
         client = web_app_module.app.test_client()
         current_row = {
@@ -2398,6 +2698,9 @@ class WebSettlementTests(unittest.TestCase):
         self.assertIn("/sync-issue", html)
         self.assertIn("manual_issue", html)
         self.assertIn("补入错过期号", html)
+        self.assertIn("/sync-finished-date", html)
+        self.assertIn("finished_date", html)
+        self.assertIn("按日期补入完场赛事", html)
         self.assertIn("赛后结果与赛前预测对比", html)
         self.assertIn("同步赛果并结算当前场次", html)
         self.assertIn("/history/backtest", html)
